@@ -1,0 +1,201 @@
+#!/bin/bash
+# rei-push: Mac işinin dalını GitHub'a taşıyan root yardımcısı (Aşama 3 push, 2026-11-01). Kaynak zziroo/rei sunucu/mac/rei-push,
+# kurulu yer /usr/local/sbin/rei-push (root 755); /etc/sudoers.d/rei-push ile iki ayrı kullanıcı çağırır:
+#   rei:     sudo -n /usr/local/sbin/rei-push yayinla <proje> <iş-id> [dal]   `bitir` adımında (rei-mac): mod main ve her değişen yol izinli
+#                                                                      → rei/<iş-id> main'e fast-forward push; mod dal / izinli olmayan yol / ff değil
+#                                                                      / 4. argüman `dal` (yalnız bu literal; kapı zorlar, neden metni sabit) → yalnız dal push
+#            sudo -n /usr/local/sbin/rei-push kontrol                   PAT dosyası ve repo izinleri (kurulum doğrulaması)
+#   reionay: sudo -n /usr/local/sbin/rei-push birlestir <proje> <iş-id> <sha>  GitHub'daki rei/<iş-id>'yi (ucu tam olarak <sha> ise;
+#            onay içeriğe bağlıdır, araya giren bir iş dalı ilerletmişse HATA) main'e fast-forward push, dalı siler.
+#            `reionay` ayrı Mac kullanıcısıdır (kapı rei-mac-onay, kendi SSH anahtarı Rei sunucusunda, managed ask → Telegram düğmesi);
+#            iş (`claude -p`, rei olarak) bu kimliğe erişemez, yani onaysız birleştiremez (inceleme bulgusu 2026-11-01).
+# Çıktı tek satır stdout: "PUSH: main <sha> (N commit)" | "PUSH: dal rei/<iş-id> <sha40> (N commit)[; <neden>]; main'e birleştirme onay ister (…)" | "BİRLEŞTİ: …" | "HATA: …".
+# <neden> sabit kümedendir, yol adı taşımaz (iş dosya adını seçer, ayraç öncesi güvenilen satıra metin giremesin); yollar yalnız YOL: satırlarındadır.
+# Sonuç dosyası (yalnız yayinla; arg_dogrula'dan geçen iş-id için): /usr/local/var/rei/<iş-id>.txt (dizin root 755, dosya root 644, geçici dosya + mv).
+# Başarıda ilk satır PUSH:, sonraki satırlar en çok 30 `YOL: <yol>` (önce korumalı, sonra izinsiz yollar; denetim karakterleri silinir; sığmazsa son
+# satır `YOL: (+N yol daha)`). HATA kaydı tek satırdır, YOL taşımaz ve var olan PUSH: kaydını ezmez: iş `yayinla`yı yeniden çağırıp onaylanacak commit'in
+# yol listesini değiştiremez. İş bu dosyaya yazamaz; kapı PUSH satırını, rei-mac-onay `yollar <iş-id> <sha>` ile yol listesini buradan okur.
+# PAT: /etc/rei/github-push.env (root 600; GITHUB_PAT=…, GITHUB_SAHIP=zziroo). rei ve claude -p okuyamaz; komut satırına girmez
+# (git'e GIT_CONFIG_* env'iyle http.extraHeader, curl'e stdin'den başlık). rei'nin klonuna (/Users/rei/ZZ/<proje>) yalnız
+# `git fetch` ile dokunur ve upload-pack'i `sudo -u rei` ile rei kimliğinde koşturur (root klonun .git/config'ini, hook'larını,
+# alternates'ini hiç okumaz); objeler root'a ait geçici bare repoya gelir. Yalnız fast-forward, asla --force, asla rei/* ve main dışında ref.
+# Mod tablosu, izinli ve korumalı yollar aşağıda;
+# bunlar root sahipli dosyada durur, iş (claude -p) değiştiremez. Yeni proje: MODLAR + rei-mac PROJELER + PAT'a repo + Mac'te klon;
+# tabloda izinli/korumalı satırı olmayan proje hep dala düşer (fail-closed).
+# macOS bash 3.2. Günlük: `log show --predicate 'eventMessage contains "rei-push"' --last 1h`.
+set -euo pipefail
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin LC_ALL=C   # C yereli: grep/tr/sed bayt üstünde çalışır, geçersiz UTF-8'de ölmez; `[^ -~]` ASCII dışını yakalar
+ENVD=/etc/rei/github-push.env
+SONUC_DIZIN=/usr/local/var/rei
+TABAN=main
+# Mod: main = iş bitince doğrudan main'e (fast-forward); dal = yalnız rei/<iş-id> dalı, main'e birleştirme `birlestir` ile (onaylı).
+# Deploy'u olan uygulama projeleri (diskort, tussle, ziroo-edge…) eklenirse "dal" olmalı.
+MODLAR=" rei=main brain=main "
+# İzinli yollar (pozitif liste; proje başına, genişletilmiş regex, harfe duyarsız): mod main'de bile main'e yalnız şu üç koşul birlikte tutarsa
+# gidilir: her değişen yol burada, hiçbiri korumalı listede değil, hiçbirinin yeni modu 100644'ten farklı değil (symlink, çalıştırılabilir dosya,
+# alt modül, silme, taşıma dal + düğme ister). Kalan her şey dal + `birlestir` onayı. _overview hiçbir zaman düğmesiz main'e gitmez.
+IZINLI_rei='^[^/]+\.md$|^docs/[^/]+\.md$'
+IZINLI_brain='^00-Inbox/[^/]+\.md$|^10-Projects/[^/]+/(sessions|decisions|lessons)/[^/]+\.md$'
+# Korumalı yollar (proje başına, genişletilmiş regex; dalda bu yollar değişmişse izinli listede olsa da yalnız dal push edilir, birleştirme onay ister):
+# Claude Code proje ayarı/hook'ları/talimatı/MCP listesi (açılınca Yusuf'un oturumunda koşar), bu reponun sunucu/ altı (kapı, izin,
+# sunucuda root/rei olarak koşan betikler, Telegram eklentisi: main'den sunucuya kopyalanır), runbook ve kod haritası (ajanların güvendiği
+# belgeler), Obsidian eklentileri, vault'un özet ve kural notları (_overview.md, Home.md, 20-Areas/: Yusuf'un oturumu başta okur).
+# Desen harfe DUYARSIZ eşlenir (grep -i: APFS harfe duyarsız, `Claude.md`/`.Claude/` de aynı dosyadır) ve her yol bileşeninde
+# (`docs/CLAUDE.md`, `CLAUDE.local.md` de Claude Code'un yüklediği dosyalardır).
+# ASCII dışı bayt içeren her yol da korumalıdır (APFS Unicode katlaması: `ſunucu/`, `.mcp.jſon` gibi benzerler kaçmasın).
+KORUMALI_rei='(^|/)(\.claude(/|$)|claude(\.local)?\.md$|\.mcp\.json$|\.husky(/|$))|^sunucu(/|$)|^docs/(sunucu-kurulum|kod-haritasi)\.md$|^\.git[a-z]+(/|$)|^\.git(modules|attributes)$|[^ -~]'
+KORUMALI_brain='(^|/)(\.claude(/|$)|claude(\.local)?\.md$|\.mcp\.json$|\.obsidian(/|$)|_overview\.md$|home\.md$)|^20-Areas(/|$)|^\.git[a-z]+(/|$)|^\.git(modules|attributes)$|[^ -~]'
+EN_COK_COMMIT=50
+EN_COK_YOL=30      # sonuç dosyasındaki YOL: satırı tavanı
+umask 077
+
+log()  { logger -t rei-push -- "$*"; }
+SONUC_ID=""        # yalnız arg_dogrula'dan geçen iş-id; boşken sonuç dosyası yazılmaz (geçersiz id ile dosya açılmaz, birlestir dokunmaz)
+TMP=""
+yol_satirlari() {  # sonuç dosyasının YOL: satırları; yollar_topla çalışmadıysa boş
+  [ -n "$TMP" ] && [ -s "$TMP/yollar" ] || return 0
+  local n kalan
+  n=$(awk 'END { print NR }' "$TMP/yollar")
+  cat "$TMP/korumali" "$TMP/uygunsuz" "$TMP/izinsiz" "$TMP/yollar" 2>/dev/null | awk '!g[$0]++' > "$TMP/sira" || true
+  if [ "$n" -le "$EN_COK_YOL" ]; then cat "$TMP/sira"
+  else
+    kalan=$((n - EN_COK_YOL + 1))
+    head -n $((EN_COK_YOL - 1)) "$TMP/sira"; echo "(+$kalan yol daha)"
+  fi | tr -d '\000-\011\013-\037\177' | cut -c1-300 | sed 's/^/YOL: /' | iconv -c -f UTF-8 -t UTF-8 || true
+}
+sonuc_yaz() {  # <ilk satır> [yollu]: root dosyasına atomik yaz; yazılamazsa günlüğe düşer, stdout sözleşmesi bozulmaz (kapı dosyayı bulamazsa `kayıt yok` der)
+  [ -n "$SONUC_ID" ] || return 0
+  if [ ! -d "$SONUC_DIZIN" ] || [ -L "$SONUC_DIZIN" ]; then log "sonuç dizini yok: $SONUC_DIZIN"; return 0; fi
+  local t
+  t=$(mktemp "$SONUC_DIZIN/.$SONUC_ID.XXXXXX") || { log "sonuç dosyası açılamadı"; return 0; }
+  if { printf '%s\n' "$1" | tr -d '\000-\011\013-\037\177' | cut -c1-1500 | iconv -c -f UTF-8 -t UTF-8 || true; if [ "${2:-}" = yollu ]; then yol_satirlari; fi; } > "$t" \
+     && chmod 644 "$t" && mv -f "$t" "$SONUC_DIZIN/$SONUC_ID.txt"; then return 0; fi
+  rm -f "$t"; log "sonuç dosyası yazılamadı: $SONUC_ID"
+}
+hata_yaz() {  # <satır>: HATA yalnız PUSH kaydı yoksa yazılır; iş ikinci `yayinla` ile başarılı push'un kaydını ve yol listesini değiştiremez
+  [ -n "$SONUC_ID" ] || return 0
+  local f="$SONUC_DIZIN/$SONUC_ID.txt"
+  if [ -f "$f" ] && [ ! -L "$f" ] && [ "$(head -c 6 "$f")" = "PUSH: " ]; then log "HATA kaydı PUSH'u ezmedi: $SONUC_ID"; return 0; fi
+  sonuc_yaz "$1"
+}
+hata() { hata_yaz "HATA: $*" || true; echo "HATA: $*"; log "hata: $*"; exit 1; }
+[ "$(id -u)" = 0 ] || hata "root gerekli"
+[ $# -le 4 ] || hata "fazla argüman"
+alt="${1:-}"; proje="${2:-}"; id="${3:-}"; sha="${4:-}"
+
+mod_bul() { case "$MODLAR" in *" $1="*) local m="${MODLAR#* $1=}"; echo "${m%% *}" ;; *) echo "" ;; esac; }
+korumali_bul() { case "$1" in rei) echo "$KORUMALI_rei" ;; brain) echo "$KORUMALI_brain" ;; *) echo '.' ;; esac; }   # tabloda yok: her yol korumalı (fail-closed)
+izinli_bul()   { case "$1" in rei) echo "$IZINLI_rei" ;; brain) echo "$IZINLI_brain" ;; *) echo '^$' ;; esac; }           # tabloda yok: hiçbir yol izinli değil (fail-closed)
+arg_dogrula() {
+  [[ "$proje" =~ ^[a-z0-9-]{1,20}$ ]] || hata "proje adı reddedildi"
+  [[ "$id" =~ ^[0-9]{8}-[0-9]{6}-[a-z0-9-]{1,20}$ ]] || hata "iş-id reddedildi"
+  [ "${id:16}" = "$proje" ] || hata "iş-id projeyle uyuşmuyor"
+  MOD=$(mod_bul "$proje"); [ -n "$MOD" ] || hata "proje mod tablosunda yok: $proje"
+}
+pat_yukle() {  # PAT'ı env dosyasından oku; git ve curl'e komut satırı dışından ver
+  [ -f "$ENVD" ] && [ ! -L "$ENVD" ] || hata "PAT dosyası yok: $ENVD (kurulum: kur-rei-mac.sh sonundaki komut)"
+  [ "$(stat -f '%u %Lp' "$ENVD")" = "0 600" ] || hata "$ENVD root 600 olmalı"
+  GITHUB_PAT=$(sed -n 's/^GITHUB_PAT=//p' "$ENVD" | head -1 | tr -d '[:space:]"'"'")
+  GITHUB_SAHIP=$(sed -n 's/^GITHUB_SAHIP=//p' "$ENVD" | head -1 | tr -d '[:space:]"'"'")
+  [[ "$GITHUB_PAT" =~ ^(github_pat_[A-Za-z0-9_]{20,}|ghp_[A-Za-z0-9]{20,})$ ]] || hata "GITHUB_PAT biçimi tanınmadı"
+  [[ "$GITHUB_SAHIP" =~ ^[A-Za-z0-9-]{1,39}$ ]] || hata "GITHUB_SAHIP biçimi"
+  export GIT_CONFIG_COUNT=3 GIT_CONFIG_KEY_0=http.extraHeader
+  GIT_CONFIG_VALUE_0="Authorization: Basic $(printf 'x-access-token:%s' "$GITHUB_PAT" | base64 | tr -d '\n')"; export GIT_CONFIG_VALUE_0
+  export GIT_CONFIG_KEY_1=http.lowSpeedLimit GIT_CONFIG_VALUE_1=1000 GIT_CONFIG_KEY_2=http.lowSpeedTime GIT_CONFIG_VALUE_2=30   # yarım kopan ağda sonsuz bekleme yok
+  export GIT_TERMINAL_PROMPT=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null HOME=/var/root
+}
+url() { echo "https://github.com/$GITHUB_SAHIP/$1.git"; }
+gecici() {  # root'a ait geçici bare repo; çıkışta silinir
+  TMP=$(mktemp -d /var/root/rei-push.XXXXXX); trap 'rm -rf "$TMP"' EXIT
+  git init -q --bare "$TMP/r"
+}
+g() { git -C "$TMP/r" "$@"; }
+klon_dogrula() {  # rei'nin klonu: yol bileşenleri symlink değil, gerçek git dizini
+  KLON="/Users/rei/ZZ/$proje"
+  for p in /Users/rei /Users/rei/ZZ "$KLON" "$KLON/.git"; do [ -d "$p" ] && [ ! -L "$p" ] || hata "klon yolu yok ya da symlink: $p"; done
+  [ "$(realpath "$KLON")" = "$KLON" ] || hata "klon yolu gerçek değil"
+}
+# Dalda değişen yollar ve yeni modları (--raw -z: NUL ayrımlı, tırnaksız; yeniden adlandırma algılaması kapalı: taşınan korumalı dosya da görünür,
+# silinen yol D olarak modu 000000 ile gelir). Taban üç noktayla ortak ata: main ilerlemişse de yalnız dalın değişiklikleri sayılır.
+# Dosyalar: yollar (her satır bir yol), uygunsuz (modu 100644 değil ya da adında satır sonu), korumali, izinsiz. git diff ve grep hatası HATA'dır
+# (fail-closed); yalnız grep'in "eşleşme yok" çıkışı (1) geçer. hata() komut ikamesinde çalışmasın diye sonuçlar dosyaya yazılır.
+yollar_topla() {
+  local bas yol yeni rc=0
+  g -c core.quotePath=false diff --no-renames --raw --no-abbrev -z "taban...is" -- > "$TMP/ham" 2>/dev/null || hata "diff alınamadı"
+  : > "$TMP/yollar"; : > "$TMP/uygunsuz"
+  while IFS= read -r -d '' bas && IFS= read -r -d '' yol; do
+    [[ "$bas" =~ ^:[0-7]{6}\ [0-7]{6}\ [0-9a-f]{40,64}\ [0-9a-f]{40,64}\ [A-Z][0-9]*$ ]] || hata "diff satırı tanınmadı"
+    yeni="${bas#* }"; yeni="${yeni%% *}"
+    if [[ "$yol" == *$'\n'* ]]; then yol="${yol//$'\n'/?}"; printf '%s\n' "$yol" >> "$TMP/uygunsuz"   # satır temelli denetimi bölmesin
+    elif [ "$yeni" != 100644 ]; then printf '%s\n' "$yol" >> "$TMP/uygunsuz"; fi
+    printf '%s\n' "$yol" >> "$TMP/yollar"
+  done < "$TMP/ham"
+  grep -aiE -- "$(korumali_bul "$proje")" "$TMP/yollar" > "$TMP/korumali" 2>/dev/null || rc=$?   # stderr kapalı: stdout ilk satır sözleşmesi, kapı 2>&1 okur
+  [ "$rc" -le 1 ] || hata "yol denetimi çalışmadı"
+  grep -aivE -- "$(izinli_bul "$proje")" "$TMP/yollar" > "$TMP/izinsiz" 2>/dev/null || rc=$?
+  [ "$rc" -le 1 ] || hata "yol denetimi çalışmadı"
+}
+yol_say() { awk 'END { print NR }' "$1"; }
+ff_kontrol() {  # <taban ref> <dal ref>: dal, tabanın üstünde ve 1..EN_COK_COMMIT commit ileride
+  g merge-base --is-ancestor "$1" "$2" || hata "$TABAN ilerlemiş, fast-forward değil (önce main'i alıp yeniden dene)"
+  N=$(g rev-list --count "$1..$2")
+  [ "$N" -gt 0 ] || hata "yeni commit yok"
+  [ "$N" -le "$EN_COK_COMMIT" ] || hata "fazla commit ($N > $EN_COK_COMMIT)"
+}
+
+case "$alt" in
+  yayinla)
+    arg_dogrula; SONUC_ID="$id"
+    [ -z "$sha" ] || [ "$sha" = dal ] || hata "yayinla 4. argümanı yalnız 'dal' olabilir"
+    klon_dogrula; pat_yukle; gecici
+    # rei'nin klonundan yalnız bu dalın objeleri; upload-pack rei kimliğinde koşar (root klonun config/hook/alternates'ini okumaz)
+    g fetch -q --upload-pack "sudo -n -u rei -H /usr/bin/git upload-pack" "$KLON" "+refs/heads/rei/$id:refs/heads/is" 2>/dev/null \
+      || hata "dal okunamadı: rei/$id ($KLON)"
+    g fetch -q "$(url "$proje")" "+refs/heads/$TABAN:refs/heads/taban" 2>/dev/null || hata "GitHub'dan $TABAN alınamadı (PAT/ağ?)"
+    N=$(g rev-list --count taban..is); [ "$N" -gt 0 ] || hata "yeni commit yok"
+    [ "$N" -le "$EN_COK_COMMIT" ] || hata "fazla commit ($N > $EN_COK_COMMIT)"
+    yollar_topla
+    hedef="$MOD"; neden=""   # neden yalnız sabit metin ve sayı: rei-mac sonuc_satiri bu kümeyi tam desenle doğrular, değişirse orası da değişir
+    if [ "$sha" = dal ]; then hedef=dal; neden="kapı dala zorladı"
+    elif [ "$hedef" = main ]; then
+      if ! g merge-base --is-ancestor taban is; then hedef=dal; neden="$TABAN ilerlemiş, fast-forward değil"
+      elif [ ! -s "$TMP/yollar" ]; then hedef=dal; neden="değişen yol yok"
+      elif [ -s "$TMP/korumali" ]; then hedef=dal; neden="korumalı yol değişti: $(yol_say "$TMP/korumali") yol"
+      elif [ -s "$TMP/uygunsuz" ]; then hedef=dal; neden="dosya modu uygun değil: $(yol_say "$TMP/uygunsuz") yol"
+      elif [ -s "$TMP/izinsiz" ]; then hedef=dal; neden="izinli liste dışında: $(yol_say "$TMP/izinsiz") yol"; fi
+    fi
+    if [ "$hedef" = main ]; then
+      g push -q "$(url "$proje")" "refs/heads/is:refs/heads/$TABAN" 2>/dev/null || hata "$TABAN'e push başarısız (PAT yetkisi? bu arada main ilerledi?)"
+      log "yayinla $proje $id → $TABAN $(g rev-parse --short is) ($N commit)"
+      satir="PUSH: main $(g rev-parse --short is) ($N commit)"
+    else
+      g push -q "$(url "$proje")" "refs/heads/is:refs/heads/rei/$id" 2>/dev/null || hata "rei/$id push başarısız (PAT yetkisi?)"
+      uc=$(g rev-parse is)
+      log "yayinla $proje $id → rei/$id $uc ($N commit) ${neden:+[$neden]}"
+      satir="PUSH: dal rei/$id $uc ($N commit)${neden:+; $neden}; main'e birleştirme onay ister (rei-mac birlestir $id $uc)"
+    fi
+    satir=$(printf '%s' "$satir" | tr -d '\000-\037\177' | iconv -c -f UTF-8 -t UTF-8 || true)   # stdout ilk satır sözleşmesi: tek satır
+    sonuc_yaz "$satir" yollu; echo "$satir" ;;
+  birlestir)
+    arg_dogrula; [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || hata "onaylanan commit (40 hex sha) gerekli"
+    pat_yukle; gecici
+    g fetch -q "$(url "$proje")" "+refs/heads/$TABAN:refs/heads/taban" "+refs/heads/rei/$id:refs/heads/is" 2>/dev/null \
+      || hata "GitHub'dan $TABAN ya da rei/$id alınamadı (dal yok?)"
+    [ "$(g rev-parse is)" = "$sha" ] || hata "rei/$id'nin ucu onaylanan commit değil ($(g rev-parse --short is) ≠ ${sha:0:7}); dal onaydan sonra değişmiş"
+    ff_kontrol taban is
+    g push -q "$(url "$proje")" "refs/heads/is:refs/heads/$TABAN" 2>/dev/null || hata "$TABAN'e push başarısız (bu arada main ilerledi?)"
+    g push -q --force-with-lease="refs/heads/rei/$id:$sha" "$(url "$proje")" ":refs/heads/rei/$id" 2>/dev/null || true   # dal bu arada ilerlediyse silme reddedilir
+    log "birlestir $proje $id → $TABAN $(g rev-parse --short is) ($N commit)"
+    echo "BİRLEŞTİ: main $(g rev-parse --short is) ($N commit), rei/$id silindi" ;;
+  kontrol)
+    [ -z "$proje" ] || hata "kontrol argüman almaz"
+    pat_yukle
+    for p in $MODLAR; do
+      p="${p%%=*}"; m=$(mod_bul "$p")
+      izin=$(printf 'Authorization: Bearer %s\n' "$GITHUB_PAT" | curl -sS -m 20 -H @- "https://api.github.com/repos/$GITHUB_SAHIP/$p" 2>/dev/null \
+             | tr -d ' \n' | grep -oE '"push":(true|false)' | head -1 || true)
+      printf 'kontrol: %s mod=%s %s\n' "$p" "$m" "${izin:-"erişilemedi (PAT repoyu görmüyor ya da ağ)"}"
+    done ;;
+  "") echo "rei-push: alt komut gerekli (yayinla <proje> <iş-id> [dal] | birlestir <proje> <iş-id> <sha> | kontrol)" >&2; exit 2 ;;
+  *)  hata "reddedildi: $alt" ;;
+esac

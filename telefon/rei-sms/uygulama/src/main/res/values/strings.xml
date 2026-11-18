@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="uygulama_adi">Rei SMS</string>
+    <string name="dugme_erisim">Bildirim erişimi</string>
+    <string name="dugme_baglan">Yeniden bağla</string>
+    <string name="var">açık</string>
+    <string name="yok">kapalı</string>
+    <string name="bagli">bağlı</string>
+    <string name="bagli_degil">bağlı değil</string>
+    <string name="hic">henüz yok</string>
+    <string name="durum_erisim">Bildirim erişimi: %1$s</string>
+    <string name="durum_dinleyici">Dinleyici: %1$s</string>
+    <string name="durum_kuyruk">Kuyruk: %1$d</string>
+    <string name="durum_son_basari">Son başarılı gönderim: %1$s</string>
+    <string name="durum_son_yanit">Son sunucu yanıtı: %1$s</string>
+    <string name="yanit_ag">bağlantı yok</string>
+    <string name="durum_dusen">Düşen: %1$d ret, %2$d tavan</string>
+    <string name="durum_elenen">Elenen kod: %1$d</string>
+    <string name="durum_gizlenen">Gizlenen banka mesajı: %1$d</string>
+    <string name="durum_atlanan">Atlanan yoklama: %1$d</string>
+    <string name="not_hyperos">HyperOS: Uygulama ayarlarında otomatik başlatma açık olmalı. Kapalıyken bildirim erişimi açık görünür, ama sistem bağlantıyı reddeder. Durum: appops get net.ziroo.reisms 10008</string>
+</resources>

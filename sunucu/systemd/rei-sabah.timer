@@ -1,0 +1,9 @@
+[Unit]
+Description=Rei: her sabah 08:30 İstanbul (05:30 UTC) özet mesajı
+
+[Timer]
+OnCalendar=*-*-* 08:30:00 Europe/Istanbul
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,10 @@
+[Unit]
+Description=Rei: sabah Telegram özeti (gece gözcüsü + dünkü kullanım)
+After=network-online.target
+Wants=network-online.target
+OnFailure=rei-hata@rei-sabah.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/rei-sabah.sh
+TimeoutStartSec=450

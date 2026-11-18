@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/veri_kurallari"
+        android:fullBackupContent="false"
+        android:icon="@drawable/simge"
+        android:label="@string/uygulama_adi"
+        android:networkSecurityConfig="@xml/ag_guvenligi"
+        android:theme="@android:style/Theme.DeviceDefault.DayNight"
+        android:usesCleartextTraffic="false">
+
+        <activity
+            android:name=".Ana"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".Dinleyici"
+            android:exported="true"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
+        <!-- MY_PACKAGE_REPLACED'i sistem yollar, dışa açık olması gerekmez. -->
+        <receiver
+            android:name=".GuncellemeAlici"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- WorkManager'ın dışa açtığı bileşenler kapatılır. JobScheduler sistem kimliğiyle bağlanır. -->
+        <service
+            android:name="androidx.work.impl.background.systemjob.SystemJobService"
+            android:exported="false"
+            tools:replace="android:exported" />
+        <receiver
+            android:name="androidx.work.impl.diagnostics.DiagnosticsReceiver"
+            tools:node="remove" />
+        <receiver
+            android:name="androidx.profileinstaller.ProfileInstallReceiver"
+            tools:node="remove" />
+    </application>
+</manifest>

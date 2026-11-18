@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Rei → Mac kapısı (Tailscale üstünden, rei@Mac). Anahtar ~/.ssh/rei_mac yalnız Mac'teki /usr/local/sbin/rei-mac'i
+# çalıştırabilir (authorized_keys restrict,from=,command=); ssh config `Host rei-mac`.
+# Kullanım: rei-mac is <proje> [ayar] < not.md  |  rei-mac durum [iş-id]  |  rei-mac log <iş-id>
+#           rei-mac devam <iş-id> < mesaj.md  |  rei-mac devam-ayar <iş-id> <ayar...> < mesaj.md
+#           rei-mac cevap <iş-id> < cevap.md  |  rei-mac cevap-ayar <iş-id> <ayar...> < cevap.md
+#           rei-mac bitir <iş-id>  |  rei-mac iptal <iş-id>  |  rei-mac yollar <iş-id> <sha>  |  rei-mac birlestir <iş-id> <sha>
+# Ayar: [opus|sonnet] [low|medium|high|xhigh|max] [workflow|ultracode]; denetimi Mac'teki kapı yapar.
+# Managed ask (Telegram onayı): is, birlestir, bitir, iptal, devam-ayar, cevap-ayar. durum, log, yollar, düz devam ve düz cevap kartsız.
+# devam-ayar ve cevap-ayar Mac'e devam ve cevap olarak gider. Düz devam ve cevap ayar almaz: tek argümanlı biçim kartsız kalmalı,
+# stdin metni komut satırında olabildiği için izin kuralı iki argümanlı biçimi glob ile ayıramaz, kart bu yüzden ayrı verb'e bağlıdır.
+# Boşluklu argüman reddedilir: ssh argümanları boşlukla birleştirir, Mac yeniden böler, `devam "<id> high"` kartsız ayar taşırdı.
+# İlk argüman pozitif listededir, `-` ile başlayan argüman reddedilir: ask kuralı komut yazımına bakar, `-- bitir <id>` ya da
+# `-l reionay -i … birlestir <id> <sha>` kuralı atlayıp ssh'a seçenek olarak geçerdi. Yeni alt komut buraya da eklenir.
+# `birlestir` ve `yollar` ayrı anahtarla (~/.ssh/rei_mac_onay, ssh config `Host rei-mac-onay`, Mac'te `reionay` kullanıcısı → rei-mac-onay)
+# gider: Mac'teki iş bu anahtara erişemez, onayı atlayamaz. `yollar` salt okunur, kart çıkarmaz.
+# Mac kapalı/uykuda ya da Tailscale bağlı değilse çıkış 255. Sarmalayıcının kendi reddi çıkış 1, `HATA:` önekli.
+hata() { echo "HATA: $*" >&2; exit 1; }
+for a in "$@"; do
+  case "$a" in
+    *[[:space:]]*) hata "argümanda boşluk reddedildi" ;;
+    -*) hata "seçenek biçimli argüman reddedildi" ;;
+  esac
+done
+hedef=rei-mac
+case "${1:-}" in
+  birlestir|yollar) hedef=rei-mac-onay ;;
+  devam|cevap) [ "$#" -le 2 ] || hata "$1 ayar almaz, $1-ayar kullan" ;;
+  devam-ayar|cevap-ayar)
+    [ "$#" -ge 3 ] || hata "kullanım: $1 <iş-id> <ayar...>"
+    verb="${1%-ayar}"; shift; set -- "$verb" "$@" ;;
+  is|durum|log|bitir|iptal) ;;
+  *) hata "bilinmeyen alt komut; izinliler: is durum log devam cevap devam-ayar cevap-ayar bitir iptal yollar birlestir" ;;
+esac
+ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30 -o ServerAliveCountMax=4 "$hedef" "$@"
+k=$?
+[ "$k" -eq 255 ] && echo "rei-mac: Mac erişilemiyor (kapalı/uykuda ya da Tailscale bağlı değil)" >&2
+exit "$k"

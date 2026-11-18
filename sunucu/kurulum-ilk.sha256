@@ -1,0 +1,4 @@
+# Repoya girmeden önceki kurulu sürümler: bu dosyalar repoya ilk kez değiştirilmiş halleriyle girdi, kurulu özet git geçmişinde yok. Biçim: <sha256> <repo-yolu>. Yalnız tam özet kabul edilir.
+783a941e4b244bbc10ae2ed08178cb2514040d4bafa51e8f19cc19d63f3ac47b sunucu/systemd/rei.service
+5485c41425951ecd93c6846cb63e70336e380602300ecd9b14b87f3eb191468c sunucu/etc/rei.env.example
+e948a8ee054200ee9cfa56973ab278dd3901e7cc4f864c41a067e80bf918ad06 sunucu/etc/kuma.env.example

@@ -1,0 +1,5 @@
+# /etc/sudoers.d/rei-isaret (root:root 440). `deploy` kullanıcısı yalnız rei-isaret'i, yalnız bu biçimde çalıştırır.
+# Kaynak: rei projesi sunucu/vps/sudoers-rei-isaret. Kurulum: visudo -cf <dosya> && install -m 440 <dosya> /etc/sudoers.d/rei-isaret
+# Not: sudoers'ta [0-9]* sözcük sınırını da geçer; sayı denetimini rei-kapi ve rei-isaret ayrıca regex ile yapar.
+Defaults!/usr/local/sbin/rei-isaret !requiretty, env_reset
+deploy ALL=(root) NOPASSWD: /usr/local/sbin/rei-isaret diskort-incelendi [0-9]*

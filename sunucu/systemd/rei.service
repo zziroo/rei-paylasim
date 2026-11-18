@@ -1,0 +1,26 @@
+[Unit]
+Description=Rei: Claude Code + Telegram kanalı (tmux oturumu "rei")
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=forking
+User=rei
+Group=rei
+WorkingDirectory=/home/rei/ZZ
+Environment=HOME=/home/rei
+Environment=TERM=xterm-256color
+Environment=LANG=C.UTF-8
+EnvironmentFile=-/etc/rei/rei.env
+ExecStart=/usr/bin/tmux -L rei new-session -d -s rei -x 200 -y 50 /usr/local/lib/rei/rei-baslat.sh
+ExecStop=/usr/bin/tmux -L rei kill-server
+Restart=always
+RestartSec=20
+MemoryHigh=2500M
+MemoryMax=3000M
+OOMScoreAdjust=500
+
+[Install]
+WantedBy=multi-user.target

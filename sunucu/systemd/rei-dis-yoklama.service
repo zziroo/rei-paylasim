@@ -1,0 +1,11 @@
+[Unit]
+Description=Rei: ist-1 ve Kuma için dış yoklama
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/rei-dis-yoklama.sh
+StateDirectory=rei-dis-yoklama
+StateDirectoryMode=0700
+TimeoutStartSec=240

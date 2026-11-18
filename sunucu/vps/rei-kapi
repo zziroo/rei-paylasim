@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# Ana VPS'te `deploy` kullanıcısının authorized_keys'inde command= ile çağrılan kapı.
+# Rei'nin anahtarı yalnız buraya girer; shell yok. Alt komutlar beyaz listedir, argümanlar
+# exec'e dizi olarak geçer (shell yorumu yok).
+set -euo pipefail
+cmd="${SSH_ORIGINAL_COMMAND:-}"
+# Önce satır sonu reddi, sonra günlük; günlüğe yazılmayan karakterler ? olur (sahte günlük satırı ve kaçış dizisi önlenir).
+[[ "$cmd" == *$'\n'* ]] && { logger -t rei-kapi "from=${SSH_CONNECTION%% *} çok satırlı komut reddedildi"; echo "rei-kapi: çok satırlı komut reddedildi" >&2; exit 1; }
+kayit="${cmd:0:300}"; logger -t rei-kapi "from=${SSH_CONNECTION%% *} cmd=${kayit//[^[:print:]]/?}"
+read -r -a parca <<< "$cmd"
+alt="${parca[0]:-}"
+case "$alt" in
+  ziroobank-oku) exec /usr/bin/python3 -I /usr/local/lib/rei/ziroobank-oku.py ;;
+  ziroobank-api)
+    # ziroobank-api <GET|POST|PUT|DELETE> </yol> [<json>]  (gövde: yoldan sonraki her şey)
+    yontem="${parca[1]:-}"; yol="${parca[2]:-}"
+    [[ "$yontem" =~ ^(GET|POST|PUT|DELETE)$ ]] || { echo "rei-kapi: yöntem reddedildi" >&2; exit 1; }
+    # Yolda nokta yok (/./users gibi normalize atlatmalarına karşı); asıl beyaz liste ziroobank-api.py'de.
+    [[ "$yol" =~ ^(/[A-Za-z0-9_-]+){1,6}$ ]] || { echo "rei-kapi: yol reddedildi" >&2; exit 1; }
+    # Gövde: komutun üçüncü boşluğundan sonraki ham kısım (diziden birleştirme boşlukları bozardı).
+    govde=""; [ "${#parca[@]}" -gt 3 ] && govde="${cmd#* * * }"
+    if [ -n "$govde" ]; then exec /usr/bin/python3 -I /usr/local/lib/rei/ziroobank-api.py "$yontem" "$yol" "$govde"
+    else exec /usr/bin/python3 -I /usr/local/lib/rei/ziroobank-api.py "$yontem" "$yol"; fi ;;
+  uptime)        exec /usr/bin/uptime ;;
+  deploy-durum|deploy-log)
+    # Salt okunur: deploy-durum <proje> | deploy-log <proje>. Deploy ve geri alma kapıda yok, Claude oturumlarından yapılır.
+    # Asıl iş root'un /usr/local/sbin/rei-deploy betiğinde; sudoers.d/rei-deploy yalnız bu biçimlere izin verir.
+    proje="${parca[1]:-}"
+    [[ "$proje" =~ ^[a-z0-9-]{1,20}$ ]] || { echo "rei-kapi: proje adı reddedildi" >&2; exit 1; }
+    [ "${#parca[@]}" -le 2 ] || { echo "rei-kapi: fazla argüman" >&2; exit 1; }
+    case "$alt" in
+      deploy-durum) exec /usr/bin/sudo -n /usr/local/sbin/rei-deploy durum "$proje" ;;
+      deploy-log)   exec /usr/bin/sudo -n /usr/local/sbin/rei-deploy log "$proje" ;;
+    esac ;;
+  diskort-incelendi)
+    # Tek yazan alt komut: `yeni` geri bildirimi `incelendi` yapar (sabit not). Asıl iş root'un /usr/local/sbin/rei-isaret betiğinde; sudoers.d/rei-isaret yalnız bu biçime izin verir.
+    id="${parca[1]:-}"
+    [ "${#parca[@]}" -eq 2 ] || { echo "rei-kapi: argüman reddedildi" >&2; exit 1; }
+    [[ "$id" =~ ^[0-9]{1,9}$ ]] || { echo "rei-kapi: id reddedildi (sayı)" >&2; exit 1; }
+    exec /usr/bin/sudo -n /usr/local/sbin/rei-isaret diskort-incelendi "$id" ;;
+  diskort-geri-bildirim|diskort-hata|diskort-kullanici-hata|tussle-geri-bildirim|tussle-hata|sunucu-durum)
+    # Salt okunur Diskort/Tussle sorguları ve sunucu güncellik raporu. Asıl iş root'un /usr/local/sbin/rei-oku betiğinde; sudoers.d/rei-oku yalnız
+    # sabit biçimlere izin verir; burada da aynı denetim (üç katman: kapı, sudoers, rei-oku). Yazan alt komut yok.
+    [ "${#parca[@]}" -le 3 ] || { echo "rei-kapi: fazla argüman" >&2; exit 1; }
+    a1="${parca[1]:-}"; a2="${parca[2]:-}"
+    case "$alt" in
+      diskort-geri-bildirim)
+        case "$a1" in
+          list)
+            if [ -z "$a2" ]; then exec /usr/bin/sudo -n /usr/local/sbin/rei-oku diskort-geri-bildirim list
+            elif [[ "$a2" =~ ^(yeni|incelendi)$ ]]; then exec /usr/bin/sudo -n /usr/local/sbin/rei-oku diskort-geri-bildirim list "$a2"
+            else echo "rei-kapi: list süzgeci reddedildi (yeni|incelendi)" >&2; exit 1; fi ;;
+          show)
+            [[ "$a2" =~ ^[0-9]{1,9}$ ]] || { echo "rei-kapi: id reddedildi (sayı)" >&2; exit 1; }
+            exec /usr/bin/sudo -n /usr/local/sbin/rei-oku diskort-geri-bildirim show "$a2" ;;
+          *) echo "rei-kapi: diskort-geri-bildirim list|show" >&2; exit 1 ;;
+        esac ;;
+      diskort-hata)
+        [[ "$a1" =~ ^[0-9]{1,13}$ ]] || { echo "rei-kapi: sinceMs reddedildi (epoch ms)" >&2; exit 1; }
+        [ -z "$a2" ] || { echo "rei-kapi: fazla argüman" >&2; exit 1; }
+        exec /usr/bin/sudo -n /usr/local/sbin/rei-oku diskort-hata "$a1" ;;
+      diskort-kullanici-hata)
+        [[ "$a1" =~ ^[a-z0-9_.]{3,32}$ ]] || { echo "rei-kapi: kullanıcı adı reddedildi" >&2; exit 1; }
+        [ -z "$a2" ] || { echo "rei-kapi: fazla argüman" >&2; exit 1; }
+        exec /usr/bin/sudo -n /usr/local/sbin/rei-oku diskort-kullanici-hata "$a1" ;;
+      tussle-geri-bildirim)
+        [ -z "$a1" ] || { echo "rei-kapi: fazla argüman" >&2; exit 1; }
+        exec /usr/bin/sudo -n /usr/local/sbin/rei-oku tussle-geri-bildirim ;;
+      tussle-hata)
+        [[ "$a1" =~ ^([1-9][0-9]{0,2}|1000)$ ]] || { echo "rei-kapi: N reddedildi (1-1000)" >&2; exit 1; }
+        [ -z "$a2" ] || { echo "rei-kapi: fazla argüman" >&2; exit 1; }
+        exec /usr/bin/sudo -n /usr/local/sbin/rei-oku tussle-hata "$a1" ;;
+      sunucu-durum)
+        [ -z "$a1" ] || { echo "rei-kapi: fazla argüman" >&2; exit 1; }
+        exec /usr/bin/sudo -n /usr/local/sbin/rei-oku sunucu-durum ;;
+    esac ;;
+  "")            echo "rei-kapi: alt komut gerekli (ziroobank-oku | ziroobank-api | uptime | deploy-durum | deploy-log | diskort-geri-bildirim | diskort-hata | diskort-kullanici-hata | diskort-incelendi | tussle-geri-bildirim | tussle-hata | sunucu-durum)" >&2; exit 2 ;;
+  *)             echo "rei-kapi: reddedildi: $alt" >&2; exit 1 ;;
+esac

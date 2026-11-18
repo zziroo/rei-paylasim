@@ -1,0 +1,188 @@
+{
+  "allowManagedHooksOnly": true,
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -n \"$REI_KANCASIZ\" ] || node \"$HOME/.claude/hooks/oturum-baslangici.mjs\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -n \"$REI_KANCASIZ\" ] || node \"$HOME/.claude/hooks/baglam-uyarisi.mjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -n \"$REI_KANCASIZ\" ] || node \"$HOME/.claude/hooks/ajan-tavani.mjs\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -n \"$REI_KANCASIZ\" ] || /usr/bin/node /usr/local/lib/rei/rei-adim",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -n \"$REI_KANCASIZ\" ] || /usr/bin/node /usr/local/lib/rei/rei-adim",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "defaultMode": "auto",
+    "disableBypassPermissionsMode": "disable",
+    "deny": [
+      "Read(~/.ssh/**)",
+      "Edit(~/.ssh/**)",
+      "Read(~/.claude/channels/telegram/.env)",
+      "Read(~/.git-credentials)",
+      "Read(~/.claude/.credentials.json)",
+      "Edit(~/.claude/channels/**)",
+      "Edit(~/.claude/settings.json)",
+      "Edit(~/.claude/rules/**)",
+      "Edit(~/.claude/plugins/**)",
+      "Edit(~/.claude/hooks/**)",
+      "Edit(~/telegram-eklenti/**)",
+      "Edit(~/bin/**)",
+      "Edit(~/ZZ/claude-kurulum/**)",
+      "Edit(~/ZZ/.claude/**)",
+      "Read(//etc/x-ui/**)",
+      "Edit(//etc/**)",
+      "mcp__claude_ai_Gmail__*send*",
+      "mcp__claude_ai_Gmail__*reply*",
+      "mcp__claude_ai_Gmail__*forward*",
+      "mcp__claude_ai_Gmail__*delete*",
+      "mcp__claude_ai_Gmail__*trash*",
+      "mcp__claude_ai_Gmail__*Send*",
+      "mcp__claude_ai_Gmail__*Reply*",
+      "mcp__claude_ai_Gmail__*Forward*",
+      "mcp__claude_ai_Gmail__*Delete*",
+      "mcp__claude_ai_Gmail__*Trash*",
+      "mcp__claude_ai_Gmail__apply_sensitive_*",
+      "mcp__claude_ai_Gmail__*spam*",
+      "mcp__claude_ai_Google_Drive__share_file",
+      "mcp__claude_ai_Google_Drive__trash_file",
+      "mcp__claude_ai_Google_Drive__*share*",
+      "mcp__claude_ai_Google_Drive__*Share*",
+      "mcp__claude_ai_Google_Drive__*trash*",
+      "mcp__claude_ai_Google_Drive__*Trash*",
+      "mcp__claude_ai_Google_Drive__*delete*",
+      "mcp__claude_ai_Google_Drive__*Delete*"
+    ],
+    "ask": [
+      "Bash(git push *)",
+      "Bash(ssh *)",
+      "Bash(scp *)",
+      "Bash(rsync *)",
+      "Bash(rei-vps ziroobank-api POST /mail/resend *)",
+      "Bash(~/bin/rei-vps ziroobank-api POST /mail/resend *)",
+      "Bash(/home/rei/bin/rei-vps ziroobank-api POST /mail/resend *)",
+      "Bash(*/mail/resend*)",
+      "Bash(rei-vps diskort-incelendi *)",
+      "Bash(~/bin/rei-vps diskort-incelendi *)",
+      "Bash(/home/rei/bin/rei-vps diskort-incelendi *)",
+      "Bash(*rei-vps diskort-incelendi *)",
+      "Bash(*ziroobank-api DELETE *)",
+      "Bash(*ziroobank-api POST /entries*)",
+      "Bash(*ziroobank-api PUT /entries*)",
+      "Bash(*ziroobank-api PUT /months/*false*)",
+      "Bash(rei-mac is *)",
+      "Bash(~/bin/rei-mac is *)",
+      "Bash(/home/rei/bin/rei-mac is *)",
+      "Bash(*rei-mac is *)",
+      "Bash(rei-mac birlestir *)",
+      "Bash(~/bin/rei-mac birlestir *)",
+      "Bash(/home/rei/bin/rei-mac birlestir *)",
+      "Bash(*rei-mac birlestir *)",
+      "Bash(rei-mac bitir *)",
+      "Bash(~/bin/rei-mac bitir *)",
+      "Bash(/home/rei/bin/rei-mac bitir *)",
+      "Bash(*rei-mac bitir *)",
+      "Bash(rei-mac iptal *)",
+      "Bash(~/bin/rei-mac iptal *)",
+      "Bash(/home/rei/bin/rei-mac iptal *)",
+      "Bash(*rei-mac iptal *)",
+      "Bash(rei-mac devam-ayar *)",
+      "Bash(~/bin/rei-mac devam-ayar *)",
+      "Bash(/home/rei/bin/rei-mac devam-ayar *)",
+      "Bash(*rei-mac devam-ayar *)",
+      "Bash(rei-mac cevap-ayar *)",
+      "Bash(~/bin/rei-mac cevap-ayar *)",
+      "Bash(/home/rei/bin/rei-mac cevap-ayar *)",
+      "Bash(*rei-mac cevap-ayar *)",
+      "mcp__claude_ai_Google_Calendar__*create*",
+      "mcp__claude_ai_Google_Calendar__*update*",
+      "mcp__claude_ai_Google_Calendar__*delete*",
+      "mcp__claude_ai_Google_Calendar__*respond*",
+      "mcp__claude_ai_Google_Calendar__*Create*",
+      "mcp__claude_ai_Google_Calendar__*Update*",
+      "mcp__claude_ai_Google_Calendar__*Delete*",
+      "mcp__claude_ai_Google_Calendar__*Respond*",
+      "mcp__claude_ai_Gmail__label_message",
+      "mcp__claude_ai_Gmail__label_thread",
+      "mcp__claude_ai_Gmail__unlabel_message",
+      "mcp__claude_ai_Gmail__unlabel_thread",
+      "mcp__claude_ai_Gmail__update_message_labels",
+      "mcp__claude_ai_Gmail__create_label",
+      "mcp__claude_ai_Gmail__update_label",
+      "mcp__claude_ai_Google_Drive__create_file",
+      "mcp__claude_ai_Google_Drive__copy_file",
+      "mcp__claude_ai_Google_Drive__update_file",
+      "mcp__claude_ai_Google_Docs__update_doc",
+      "mcp__claude_ai_Google_Sheets__update_*",
+      "mcp__claude_ai_Google_Sheets__append_values",
+      "mcp__claude_ai_Google_Sheets__batch_clear_values",
+      "mcp__claude_ai_Google_Sheets__insert_dimension",
+      "mcp__claude_ai_Google_Sheets__copy_sheet_to_another_spreadsheet",
+      "mcp__claude_ai_Google_Slides__update_presentation",
+      "mcp__claude_ai_Claude_Docs__create",
+      "mcp__claude_ai_Claude_Docs__update",
+      "mcp__claude_ai_Claude_Docs__delete",
+      "mcp__claude_ai_Claude_Docs__batch",
+      "mcp__claude_ai_Google_Docs__*delete*",
+      "mcp__claude_ai_Google_Docs__*Delete*",
+      "mcp__claude_ai_Google_Docs__*share*",
+      "mcp__claude_ai_Google_Docs__*Share*",
+      "mcp__claude_ai_Google_Sheets__*delete*",
+      "mcp__claude_ai_Google_Sheets__*Delete*",
+      "mcp__claude_ai_Google_Sheets__*share*",
+      "mcp__claude_ai_Google_Sheets__*Share*",
+      "mcp__claude_ai_Google_Slides__*delete*",
+      "mcp__claude_ai_Google_Slides__*Delete*",
+      "mcp__claude_ai_Google_Slides__*share*",
+      "mcp__claude_ai_Google_Slides__*Share*",
+      "mcp__claude_ai_Claude_Docs__*delete*",
+      "mcp__claude_ai_Claude_Docs__*Delete*",
+      "mcp__claude_ai_Claude_Docs__*share*",
+      "mcp__claude_ai_Claude_Docs__*Share*"
+    ]
+  }
+}

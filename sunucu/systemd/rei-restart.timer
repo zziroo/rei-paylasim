@@ -1,0 +1,9 @@
+[Unit]
+Description=Rei: her gece 05:00 İstanbul (02:00 UTC) yeniden başlatma
+
+[Timer]
+OnCalendar=*-*-* 05:00:00 Europe/Istanbul
+Persistent=false
+
+[Install]
+WantedBy=timers.target

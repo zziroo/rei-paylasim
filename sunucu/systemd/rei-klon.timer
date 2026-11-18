@@ -1,0 +1,7 @@
+[Unit]
+Description=Rei klonları, saatte bir
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=120
+[Install]
+WantedBy=timers.target

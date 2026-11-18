@@ -1,0 +1,7 @@
+[Unit]
+Description=Rei: zamanlı iş hatası bildirimi (%i)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/rei-hata.sh %i
+TimeoutStartSec=180

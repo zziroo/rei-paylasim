@@ -1,0 +1,11 @@
+[Unit]
+Description=Rei yeniden başlarken Mac'te süren turu izle, bitince Telegram'a yaz
+After=rei.service
+
+[Service]
+Type=exec
+ExecStart=/usr/local/sbin/rei-mac-izle.sh
+RuntimeMaxSec=5400
+
+[Install]
+WantedBy=rei.service

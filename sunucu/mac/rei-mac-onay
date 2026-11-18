@@ -1,0 +1,48 @@
+#!/bin/bash
+# rei-mac-onay: Mac'te `reionay` kullanıcısının SSH kapısı (2026-11-01). Tek iş: Yusuf'un Telegram'da onayladığı birleştirmeyi
+# root yardımcısına iletmek. sshd `Match User rei,reionay` → /etc/ssh/authorized_keys.d/reionay satırı
+# `restrict,from="<Rei sunucusu Tailscale IP>",command="/usr/local/sbin/rei-mac-onay"`; anahtar Rei sunucusunda ~/.ssh/rei_mac_onay,
+# sunucudaki sarmalayıcı `~/bin/rei-mac birlestir <iş-id>` buraya gelir ve managed ask kuralıyla Telegram'da düğme çıkarır.
+# Neden ayrı kullanıcı: iş (`claude -p`) `rei` olarak koşar; birlestir `rei`'nin sudo yetkisinde olsaydı iş onayı atlardı.
+# `reionay` rei'nin dosyalarını okumaz; iş-id'den projeyi türetir, gerisi `sudo -n rei-push birlestir` (sudoers-rei-push).
+# Alt komutlar:
+#   birlestir <iş-id> <sha>  sha = PUSH satırındaki dal ucu; onay o içeriğe bağlı. Çıktı rei-push'un tek satırı (BİRLEŞTİ: | HATA:).
+#   yollar <iş-id> <sha>     onay kartından önce değişen yollar: root sahipli /usr/local/var/rei/<iş-id>.txt'nin (rei-push yazar, iş yazamaz)
+#                            yalnız desene uyan `YOL: <yol>` satırları. Liste sha'ya bağlıdır: dosyanın ilk satırı tam `PUSH: dal rei/<iş-id> <sha> (`
+#                            ile başlamıyorsa HATA (kart hangi commit'i onaylatıyorsa onun listesi gelir). rei'nin iş dizinine bakmaz, sudo gerekmez.
+# Dosya root sahipli.
+set -euo pipefail
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+umask 077
+SONUC_DIZIN=/usr/local/var/rei
+EN_COK_YOL=30
+log()  { logger -t rei-mac-onay -- "$*"; }
+hata() { echo "HATA: $*"; log "red: $*"; exit 1; }
+cmd="${SSH_ORIGINAL_COMMAND:-}"
+kaynak="${SSH_CONNECTION:-yerel}"; kaynak="${kaynak%% *}"
+if [[ "$cmd" == *$'\n'* ]]; then hata "çok satırlı komut reddedildi"; fi
+kayit="${cmd:0:120}"; log "from=$kaynak cmd=${kayit//[^[:print:]]/?}"
+read -r -a parca <<< "$cmd"
+alt="${parca[0]:-}"
+id="${parca[1]:-}"
+id_dogrula() { [[ "$id" =~ ^[0-9]{8}-[0-9]{6}-[a-z0-9-]{1,20}$ ]] || hata "iş-id reddedildi"; }
+case "$alt" in
+  birlestir)
+    [ "${#parca[@]}" -eq 3 ] || hata "kullanım: birlestir <iş-id> <sha>"
+    sha="${parca[2]}"
+    id_dogrula
+    [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || hata "sha reddedildi (40 hex)"
+    proje="${id:16}"
+    sudo -n /usr/local/sbin/rei-push birlestir "$proje" "$id" "$sha" 2>&1 | head -c 2000 ;;
+  yollar)
+    [ "${#parca[@]}" -eq 3 ] || hata "kullanım: yollar <iş-id> <sha>"
+    sha="${parca[2]}"
+    id_dogrula
+    [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || hata "sha reddedildi (40 hex)"
+    f="$SONUC_DIZIN/$id.txt"
+    [ -f "$f" ] && [ ! -L "$f" ] || hata "sonuç kaydı yok: $id"
+    ilk=$(LC_ALL=C head -1 "$f" | LC_ALL=C cut -c1-200)
+    case "$ilk" in "PUSH: dal rei/$id $sha ("*) ;; *) hata "sonuç kaydı bu commit'in değil: $id" ;; esac
+    LC_ALL=C grep -aE '^YOL: [^[:cntrl:]]+$' "$f" | head -n "$EN_COK_YOL" | LC_ALL=C cut -c1-305 | iconv -c -f UTF-8 -t UTF-8 || true ;;
+  *) hata "kullanım: birlestir <iş-id> <sha> | yollar <iş-id> <sha>" ;;
+esac

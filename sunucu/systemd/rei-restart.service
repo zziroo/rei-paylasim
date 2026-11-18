@@ -1,0 +1,6 @@
+[Unit]
+Description=Rei: günlük planlı yeniden başlatma (kanal oturumu sıfırdan, bağlam temiz)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl restart rei.service

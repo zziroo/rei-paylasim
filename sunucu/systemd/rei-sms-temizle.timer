@@ -1,0 +1,7 @@
+[Unit]
+Description=Rei mesaj temizliği, günde bir
+[Timer]
+OnCalendar=*-*-* 04:20:00 Europe/Istanbul
+Persistent=true
+[Install]
+WantedBy=timers.target

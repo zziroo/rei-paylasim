@@ -1,0 +1,84 @@
+{
+  "cleanupPeriodDays": 3650,
+  "workflowKeywordTriggerEnabled": false,
+  "workflowSizeGuideline": "small",
+  "autoMemoryEnabled": false,
+  "autoMode": {
+    "environment": [
+      "Headless Mac job run as the unprivileged user rei on behalf of Yusuf, who follows it over Telegram through the Rei assistant.",
+      "The trusted workspace is the job's own git worktree under ~/agaclar/<job-id> on branch rei/<job-id>; committing to that branch is expected.",
+      "Everything outside that worktree is out of bounds for writes, including ~/ZZ (shared clones), ~/isler, ~/.claude, ~/.config, ~/.ssh and other users' files.",
+      "Pushing, deploying, ssh and sudo are not part of the job: the gate pushes the branch after Yusuf says so. GitHub credentials available to rei are read-only."
+    ]
+  },
+  "permissions": {
+    "defaultMode": "auto",
+    "disableBypassPermissionsMode": "disable",
+    "deny": [
+      "Edit(~/.claude/**)",
+      "Edit(~/.claude.json)",
+      "Edit(~/.config/**)",
+      "Edit(~/.ssh/**)",
+      "Edit(~/.gitconfig)",
+      "Edit(~/.git-credentials)",
+      "Edit(~/isler/**)",
+      "Edit(~/ZZ/**)",
+      "Edit(~/bin/**)",
+      "Edit(~/.local/**)",
+      "Edit(~/Library/**)",
+      "Read(~/.git-credentials)",
+      "Read(~/.config/rei/**)",
+      "Read(~/.ssh/**)",
+      "Read(~/.claude/.credentials.json)"
+    ],
+    "ask": [
+      "Bash(git push *)",
+      "Bash(ssh *)",
+      "Bash(scp *)",
+      "Bash(rsync *)",
+      "Bash(sudo *)",
+      "Bash(rei-mac *)",
+      "Bash(/usr/local/sbin/rei-mac *)"
+    ]
+  },
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/homebrew/bin/node /usr/local/lib/rei-mac/claude/hooks/baglam-uyarisi.mjs",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/homebrew/bin/node /usr/local/lib/rei-mac/adim.mjs",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "/opt/homebrew/bin/node /usr/local/lib/rei-mac/claude/hooks/ajan-tavani.mjs",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/homebrew/bin/node /usr/local/lib/rei-mac/adim.mjs",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

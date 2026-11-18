@@ -1,0 +1,13 @@
+# /etc/sudoers.d/rei-oku (root:root 440). `deploy` kullanıcısı yalnız rei-oku'yu, yalnız bu salt okunur biçimlerde çalıştırır.
+# Kaynak: rei projesi sunucu/vps/sudoers-rei-oku. Kurulum: visudo -cf <dosya> && install -m 440 <dosya> /etc/sudoers.d/rei-oku
+# Not: sudoers'ta [0-9]* sözcük sınırını da geçer; sayı denetimini rei-kapi ve rei-oku ayrıca regex ile yapar.
+Defaults!/usr/local/sbin/rei-oku !requiretty, env_reset
+deploy ALL=(root) NOPASSWD: /usr/local/sbin/rei-oku diskort-geri-bildirim list, \
+                            /usr/local/sbin/rei-oku diskort-geri-bildirim list yeni, \
+                            /usr/local/sbin/rei-oku diskort-geri-bildirim list incelendi, \
+                            /usr/local/sbin/rei-oku diskort-geri-bildirim show [0-9]*, \
+                            /usr/local/sbin/rei-oku diskort-hata [0-9]*, \
+                            /usr/local/sbin/rei-oku diskort-kullanici-hata [a-z0-9_.]*, \
+                            /usr/local/sbin/rei-oku tussle-geri-bildirim, \
+                            /usr/local/sbin/rei-oku tussle-hata [0-9]*, \
+                            /usr/local/sbin/rei-oku sunucu-durum

@@ -1,0 +1,46 @@
+[Unit]
+Description=Rei: telefondan gelen mesajları alır
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/rei/sms.env
+
+[Service]
+User=reisms
+Group=reisms
+EnvironmentFile=/etc/rei/sms.env
+LoadCredential=anahtar:/etc/rei/sms/anahtar
+LoadCredential=tls.crt:/etc/rei/sms/tls.crt
+LoadCredential=tls.key:/etc/rei/sms/tls.key
+ExecStart=/usr/bin/python3 -I /usr/local/sbin/rei-sms-al
+Restart=always
+RestartSec=5
+UMask=0027
+MemoryMax=64M
+TasksMax=32
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ReadWritePaths=/var/lib/rei-sms
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+[Install]
+WantedBy=multi-user.target

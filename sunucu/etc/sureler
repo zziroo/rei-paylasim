@@ -1,0 +1,5 @@
+# /etc/rei/sureler (root 644): sabah özetinin izlediği bitiş tarihleri. Sır değil, yalnız ad ve tarih. Biçim: YYYY-MM-DD ad
+# Claude girişi burada yok: credentials dosyasından okunur (rei-giris.py). 14 gün kala özet uyarır.
+# GitHub bitişi ölçümü: 2026-11-01, API yanıtının token-expiration başlığı. Tarih değişince burayı güncelle.
+2027-10-31 GitHub PAT (fra-1, okuma ve brain)
+2027-04-30 Tailscale anahtarı (sunucu ve Mac)

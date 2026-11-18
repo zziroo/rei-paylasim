@@ -1,0 +1,12 @@
+[Unit]
+Description=Rei: gün içi asistan taraması (mesaj, Gmail, takvim)
+After=network-online.target
+Wants=network-online.target
+OnFailure=rei-hata@rei-tarama.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/rei-tarama.sh
+TimeoutStartSec=480
+MemoryMax=1500M
+Nice=10

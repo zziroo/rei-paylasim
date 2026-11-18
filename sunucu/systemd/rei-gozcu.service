@@ -1,0 +1,11 @@
+[Unit]
+Description=Rei: gece gözcüsü, Diskort ve Tussle bölümleri
+After=network-online.target
+Wants=network-online.target
+OnFailure=rei-hata@rei-gozcu.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/rei-gozcu.sh
+TimeoutStartSec=900
+MemoryMax=1500M

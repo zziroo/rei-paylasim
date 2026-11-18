@@ -1,0 +1,9 @@
+[Unit]
+Description=Rei: her gece 00:20 İstanbul gözcü taraması
+
+[Timer]
+OnCalendar=*-*-* 00:20:00 Europe/Istanbul
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,7 @@
+[Unit]
+Description=Rei dış yoklama, 5 dakikada bir
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+[Install]
+WantedBy=timers.target

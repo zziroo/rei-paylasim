@@ -1,0 +1,12 @@
+[Unit]
+Description=Rei: brain, rei ve claude-kurulum klonlarını ileri al
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=rei
+Group=rei
+Environment=HOME=/home/rei
+ExecStart=/usr/local/lib/rei/rei-klon.sh
+TimeoutStartSec=240

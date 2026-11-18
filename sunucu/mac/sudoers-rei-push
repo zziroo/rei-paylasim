@@ -1,0 +1,8 @@
+# /etc/sudoers.d/rei-push (root:wheel 440). Mac'te iki kullanıcı rei-push'u root olarak, yalnız kendi alt komutlarıyla çalıştırır:
+# `rei` (iş kullanıcısı; iş bitince push) yayinla ve kontrol; `reionay` (onay kapısı rei-mac-onay) yalnız birlestir.
+# birlestir rei'ye AÇILMAZ: iş (claude -p, rei olarak) onaysız birleştirirdi. Argümanları rei-push kendisi regex'le doğrular
+# (sudoers'ın * deseni boşluk da eşler, ince eleme burada değil). Kaynak: rei projesi sunucu/mac/sudoers-rei-push.
+# Kurulum: kur-rei-mac.sh (visudo -cf ile denetler, sonra install -m 440).
+Defaults!/usr/local/sbin/rei-push !requiretty, env_reset
+rei     ALL=(root) NOPASSWD: /usr/local/sbin/rei-push yayinla *, /usr/local/sbin/rei-push kontrol
+reionay ALL=(root) NOPASSWD: /usr/local/sbin/rei-push birlestir *

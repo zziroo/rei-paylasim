@@ -1,0 +1,11 @@
+node_modules/
+.DS_Store
+*.env
+*.jks
+*.apk
+*.aab
+telefon/rei-sms/.gradle/
+telefon/rei-sms/.kotlin/
+telefon/rei-sms/build/
+telefon/rei-sms/uygulama/build/
+telefon/rei-sms/local.properties

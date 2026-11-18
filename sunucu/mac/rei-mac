@@ -1,0 +1,837 @@
+#!/bin/bash
+# rei-mac: Mac'te `rei` kullanıcısının SSH kapısı (Aşama 3, konuşan `is`). sshd `Match User rei` (sshd_config.d/200-rei.conf) →
+# /etc/ssh/authorized_keys.d/rei satırı `restrict,from="<Rei sunucusu Tailscale IP>",command="/usr/local/sbin/rei-mac"`
+# ile çağırır; shell yok (rei'nin giriş kabuğu /bin/sh: etkileşimsiz `sh -c` hiçbir dotfile okumaz, ~/.zshenv tuzağı yok).
+# Rei sunucusundaki anahtar yalnız buraya girer. Dosya root sahipli; `rei` değiştiremez. Plan: docs/mac-oturum-akisi.md (Faz 1).
+# Alt komutlar (SSH_ORIGINAL_COMMAND, beyaz liste; argümanlar exec'e dizi olarak, shell yorumu yok):
+#   is <proje> [ayar]        iş notu stdin'den (en çok 64 KB); ~/agaclar/<id> worktree, dal rei/<iş-id>, ilk tur arka planda; iş-id'yi basar
+#   devam <iş-id> [ayar]     bekleyen işe Yusuf'un serbest mesajı stdin'den (≤ 8 KB); aynı Claude oturumu `--resume` ile sürer
+#   cevap <iş-id> [ayar]     soru bekleyen işe cevap stdin'den (≤ 2000 bayt); `devam` ile tek kod yolu (tur_ac)
+#   durum [iş-id]            id yoksa son 10 iş + KURAL + BEKLEYEN; id varsa kapı bloğu, ayraç, git özeti ve Claude çıktısı
+#   log <iş-id>              son turun çıktısı (≤ 20 KB), `--- log sonu ---`, stderr, adım kuyruğu
+#   bitir <iş-id>            bekleyen işi yayınlar, zaman uyumlu; kilidi tutar, çıkarken bırakır
+#   iptal <iş-id>            çalışan turu ya da bekleyen işi kapatır; push yok, ağaç kalır. Tur süreç tablosundan bulunur, iş dosyalarından değil;
+#                            gruplar öldükten sonra --calistir 15 sn içinde çıkmazsa (takılmış) kendisi de TERM, sonra KILL alır;
+#                            `iptal edildi` yalnız --calistir gidip kilit boşalınca ve iş kapanınca basılır, aksi halde `HATA: durdurulamadı`
+# Ayar: `[opus|sonnet] [low|medium|high|xhigh|max] [workflow|ultracode]`, sıra serbest, her sınıftan en çok biri, tanınmayan kelime HATA;
+#   `sonnet ultracode` HATA. Varsayılan opus + medium, Workflow kapalı. Ayar kapı argümanıdır, dosyadan okunmaz: `$D/ayar` yalnız gösterimdir,
+#   `devam <id>` varsayılanla sürer. Bu kalite sınırıdır, güvenlik sınırı değil.
+# Tur: `caffeinate -i perl -e 'setpgrp; alarm 3600; exec' claude -p`. perl satırı grup kimliğini $D/tur.pgid'e yazar; SIGALRM exec'ten sonra
+#   yaşar, bash çıkışı 142 görür (macOS'ta sahte süreçle ölçüldü: sleep, bash, node aynı). Tur biter: kod → süreç grubu temizliği →
+#   rei uid temizliği (kilit bizde) → iptal işareti (temizlik sürerken geleni de görür) → çıktı dosyaları. kod=0 ise tur.log'un son boş olmayan satırı `SORU:` ise `soru`, değilse `bekliyor`.
+#   kod≠0 ve transkriptte asistan mesajı varsa kapı yarım kalan SORU yazar (`Devam | Bırak`); yoksa `bitti kod=N`. Push yalnız `bitir`'dedir.
+#   Bekleyen iş kilit tutmaz, ağacında durur; aynı anda tek çalışan tur (kilit).
+# Her tur başında (kilit alınmışken) kural_tazele: ~/.claude pozitif listeyle silinir (yalnız projects ve jobs kalır, */memory gider),
+#   CLAUDE.md, agents, skills root ana kopyadan (/usr/local/lib/rei-mac/claude) rename ile yazılır. Ayar yalnız root `--settings`'ten gelir.
+#   `durum` ana kopyayla diff -r yapıp `KURAL: <sha>` ya da `KURAL: BOZUK` basar.
+# Worktree: `.git/hooks` boş, `.git/info/exclude` yalnız `.claude/worktrees/`, her turda `git clean -ffdx -- .claude CLAUDE.local.md .mcp.json`;
+#   `.claude/worktrees` temizlikten muaftır (alt ajanın `isolation: "worktree"` işi tur arasında yaşar), `bitir` orada dala geçmemiş iş varsa reddeder.
+#   Kapının bütün git çağrıları hook'suz (g). `bitir` PUSH sonrası worktree'yi ve yerel dalı siler; HATA'da ağaç kalır, `bitir` yeniden çalışır.
+# Push: `bitir` içinde `sudo -n /usr/local/sbin/rei-push yayinla <proje> <iş-id> [dal]` (sudoers-rei-push): PAT root'ta, rei okuyamaz; mod ve
+#   yol listeleri rei-push'ta. `dal` argümanı yarım kalan turdan sonra inceleme izi yoksa verilir. `PUSH:` satırı root sonuç dosyasından gelir
+#   (/usr/local/var/rei/<id>.txt) ve tam desenle doğrulanır (push_gecerli); iş dizinindeki push.txt'ten yalnız `PUSH: atlandı …` ve `HATA: …` kabul edilir.
+# İnceleme izi: oturumun subagents dizininde özyinelemeli; agentType inceleme + tamamlanmış ajan kaydı. Kalite göstergesidir, kanıt değil.
+# (birlestir <iş-id> bu kapıda DEĞİL: ayrı `reionay` kullanıcısının kapısı rei-mac-onay'dadır; iş rei olarak koştuğu için onayı atlayamasın.)
+# İç mod: `rei-mac --calistir <iş-id> <proje> <--ilk|--devam> <model> <efor> <mod>` (nohup ile arka planda; SSH_ORIGINAL_COMMAND'dan erişilemez).
+# ~/isler ve ~/agaclar altındaki her şey işin (claude -p'nin) yazabildiği yerdir, VERİDİR: sayılar regex'le doğrulanır, symlink reddedilir,
+# satırlar tek satıra zorlanır, önekle desen doğrulanır, çıktıda token desenleri maskelenir. Oraya doğrudan `>`/`>>` yapılmaz (`yaz`, `ekle_hazir`):
+# iş yola FIFO koyarsa open(2) sonsuza dek bekler, kilit canlı kalır. macOS bash 3.2 (flock/timeout/readarray yok; set -u'da boş dizi hata verir,
+# `ortak` bu yüzden her zaman dolu).
+# Günlük: `log show --predicate 'eventMessage contains "rei-mac"' --last 1h`.
+set -euo pipefail
+EV=/Users/rei
+ISLER=$EV/isler
+AGACLAR=$EV/agaclar
+KILIT=$ISLER/kilit               # mkdir ile atomik kilit; içinde pid ve id dosyası
+KAPI=/usr/local/sbin/rei-mac
+REI_PUSH=/usr/local/sbin/rei-push
+SONUC_DIZINI=/usr/local/var/rei  # rei-push'un sonuç dosyaları (root 755/644, rei yazamaz)
+LIB=/usr/local/lib/rei-mac       # root ana kopya; kur-rei-guncelle.sh yazar
+CLAUDE=$LIB/bin/claude
+AYAR_NORMAL=$LIB/rei-settings.json
+AYAR_ULTRA=$LIB/rei-settings-ultra.json
+AJANLAR=$LIB/agents.json
+PROJELER=" rei brain "          # beyaz liste; yeni proje: buraya + $EV/ZZ/<proje> klonu (+ inceleme)
+TOKEN=$EV/.config/rei/token     # `claude setup-token` çıktısı (600, rei); yoksa claude kendi girişini arar
+KULLANICI=rei                   # uid temizliği yalnız bu kullanıcıyla çalışır
+MAKS_TUR=200
+TUR_SURE=3600                   # tur başına saniye; bash çıkışı 142 görür
+CEVAP_TAVAN=2000
+DEVAM_TAVAN=8192
+AYRAC_BLOK="--- kapı bloğu sonu ---"
+AYRAC_LOG="--- log sonu ---"
+export HOME=$EV PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
+export DISABLE_AUTOUPDATER=1 CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 ENABLE_CLAUDEAI_MCP_SERVERS=false
+umask 077
+
+log()  { logger -t rei-mac -- "$*"; }
+hata() { echo "HATA: $*" >&2; exit 1; }
+id_gecerli() { [[ "$1" =~ ^[0-9]{8}-[0-9]{6}-[a-z0-9-]{1,20}$ ]]; }
+proje_gecerli() { [[ "$1" =~ ^[a-z0-9-]{1,20}$ ]] && case "$PROJELER" in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+sayi() {  # dosyadan sayı oku; geçersizse 0 (iş dizini veridir: FIFO ve bağ okunmaz, okuma süre tavanlı, aritmetik enjeksiyonu yok)
+  duz_dosya "$1" || { echo 0; return 0; }
+  local v; v=$(sinirli 5 head -c 20 "$1" 2>/dev/null || true)
+  if [[ "$v" =~ ^[0-9]{1,12}$ ]]; then echo "$((10#$v))"; else echo 0; fi   # 10#: baştaki sıfır sekizlik sayılmasın (`09` aritmetikte ölürdü)
+}
+duz_dosya() { [ ! -L "$1" ] && [ -f "$1" ] && [ "$(stat -f %l "$1" 2>/dev/null)" = 1 ]; }   # symlink değil, hardlink değil (bağ sayısı 1), sıradan dosya
+# İş dizinine yazım. İstisna: is_baslat ve `--ilk` hazırlığı kilit altında taze dizine yazar, iş henüz hiç koşmadı.
+yaz() {  # <dosya> [metin]: metin + satır sonu ya da stdin. Geçici dosya (O_EXCL, FIFO'ya açılmaz) + rename: eski hedef FIFO, symlink ya da dizin olabilir
+  local gecici
+  gecici=$(mktemp "$1.XXXXXX") || return 1
+  if [ "$#" -gt 1 ]; then printf '%s\n' "$2" > "$gecici"; else cat > "$gecici"; fi || { rm -f "$gecici"; return 1; }
+  rm -rf "$1"   # hedef dizinse mv içine taşırdı
+  mv -f "$gecici" "$1"
+}
+ekle_hazir() { duz_dosya "$1" || rm -rf "$1"; }   # `>>` öncesi (günlükler): düz dosya değilse kaldırılır, `>>` yeni dosya açar
+maskele() { LC_ALL=C sed -E 's/sk-ant-[A-Za-z0-9_-]+/sk-ant-***/g; s/github_pat_[A-Za-z0-9_]+/github_pat_***/g; s/gh[pousr]_[A-Za-z0-9]{10,}/gh*_***/g'; }
+kuyruk() {  # <dosya> <bayt> → symlink/yoksa not; maskeli kuyruk
+  if duz_dosya "$1"; then tail -c "$2" "$1" | maskele; else echo "(dosya yok ya da symlink: $(basename "$1"))"; fi
+}
+uuid_gecerli() { [[ "$1" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; }
+sinirli() {  # <sn> <komut…>: süre tavanlı çalıştırma (`timeout` yok); işin dizinindeki FIFO ya da kilit `durum`u kilitlemesin
+  local s="$1"; shift
+  perl -e 'alarm shift; exec { $ARGV[0] } @ARGV; exit 127' "$s" "$@"
+}
+GIT=(git -c core.hooksPath=/dev/null -c core.fsmonitor=false)
+g() { "${GIT[@]}" "$@"; }   # kapının bütün git çağrıları buradan: iş .git'e hook ya da fsmonitor koysa da kapı çalıştırmaz
+
+# İş dosyalarından gelen metin: bayt kesmesi çok baytlı karakteri bölebilir ve UTF-8 yerelinde tr/cut "Illegal byte sequence" ile
+# ölür; bu yüzden tr/cut LC_ALL=C ile koşar, sonda iconv -c geçersiz baytları atar.
+tek_satir() {  # <bayt> (stdin) → ilk satır: denetim karaktersiz, maskeli, geçerli UTF-8
+  head -c "$1" | LC_ALL=C tr -d '\000-\011\013-\037\177' | head -1 | maskele | iconv -c -f UTF-8 -t UTF-8 || true
+}
+soru_satiri() {  # <iş dizini> → "SORU: …" (≤ 600 bayt) ya da boş; önek tutmuyorsa basılmaz
+  local s=""
+  duz_dosya "$1/soru" || return 0
+  s=$(tek_satir 600 < "$1/soru")
+  case "$s" in "SORU: "*) printf '%s\n' "$s" ;; esac
+}
+adim_satiri() {  # <iş dizini> → "ADIM: <n> | son: a | b | c" ya da boş (günlük yoksa)
+  duz_dosya "$1/adimlar.log" || return 0
+  local n son
+  n=$(wc -l < "$1/adimlar.log" | tr -d ' ')
+  son=$(tail -3 "$1/adimlar.log" | LC_ALL=C cut -f2 | LC_ALL=C tr -d '\000-\011\013-\037\177' | maskele | LC_ALL=C cut -c1-80 | iconv -c -f UTF-8 -t UTF-8 | paste -sd '|' - | sed 's/|/ | /g' || true)
+  echo "ADIM: $n | son: $son"
+}
+ayar_satiri() {  # <iş dizini> → "AYAR: model efor mod" (gösterim; tur ayarı buradan okunmaz)
+  local s=""
+  if duz_dosya "$1/ayar"; then s=$(tek_satir 64 < "$1/ayar"); fi
+  if [[ "$s" =~ ^(opus|sonnet)\ (low|medium|high|xhigh|max)\ (normal|workflow|ultracode)$ ]]; then echo "AYAR: $s"; else echo "AYAR: bilinmiyor"; fi
+}
+taban_oku() {  # <iş dizini> → doğrulanmış taban dalı adı (bozuksa main)
+  local t=""
+  if duz_dosya "$1/taban"; then t=$(tek_satir 60 < "$1/taban"); fi
+  if [[ "$t" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,50}$ ]]; then echo "$t"; else echo main; fi
+}
+oturum_oku() {  # <iş dizini> → doğrulanmış oturum UUID'si ya da boş
+  local o=""
+  if duz_dosya "$1/oturum"; then o=$(head -c 40 "$1/oturum" | tr -d '[:space:]' || true); fi
+  if uuid_gecerli "$o"; then echo "$o"; fi
+}
+# Transkript yolu worktree cwd'sinden türer: ~/.claude/projects/<yolun alfasayısal olmayanları '-'>/<oturum>.jsonl
+proje_anahtari() { printf '%s' "$1" | LC_ALL=C sed -E 's/[^A-Za-z0-9]/-/g'; }
+asistan_var() {  # <iş-id> <oturum>: transkriptte asistan mesajı var mı (bozuk --settings ile hiç başlamayan turda yok)
+  local f; f="$EV/.claude/projects/$(proje_anahtari "$AGACLAR/$1")/$2.jsonl"
+  duz_dosya "$f" && LC_ALL=C grep -aq '"type":"assistant"' "$f"
+}
+
+kilit_oku() { duz_dosya "$KILIT/$1" && head -c 40 "$KILIT/$1" | tr -dc '0-9a-z-' || true; }   # pid|id; symlink/hardlink ise boş
+kilit_pid() { kilit_oku pid | tr -dc '0-9'; }
+kilit_canli() {  # kilit var ve pid gerçekten bir rei-mac süreci mi (--calistir ya da henüz stdin okuyan kapı; yarışta bayat sayılmasın)
+  local p m; p=$(kilit_pid)
+  if [ -z "$p" ]; then   # mkdir ile pid yazımı arası: yeni kilit bayat sayılmaz
+    m=$(stat -f %m "$KILIT" 2>/dev/null || echo 0)
+    [ "$(( $(date +%s) - m ))" -lt 10 ]; return
+  fi
+  ps -p "$p" -o command= 2>/dev/null | grep -q -- "rei-mac"
+}
+bayat_kilit_temizle() {
+  if [ -d "$KILIT" ] && ! kilit_canli; then log "bayat kilit temizlendi ($(kilit_oku id))"; rm -rf "$KILIT"; fi
+}
+kilit_bu_iste() { [ "$(kilit_oku id)" = "$1" ] && kilit_canli; }
+kilit_al() {  # [iş-id]: atomik; doluysa HATA, alınınca EXIT'te bırakılır (nohup'a devreden kol trap'i kaldırır)
+  mkdir -p "$ISLER"
+  mkdir "$KILIT" 2>/dev/null || hata "başka tur çalışıyor: $(kilit_oku id)"
+  trap 'rm -rf "$KILIT"' EXIT
+  echo "$$" > "$KILIT/pid"   # stdin okunurken kilit bayat sayılmasın (pid bu kapı süreci)
+  if [ -n "${1:-}" ]; then echo "$1" > "$KILIT/id"; fi
+}
+
+# ---------- ayar ----------
+ayar_coz() {  # <kelime…> → MODEL EFOR MOD; boş kelime atlanır (bash 3.2 + set -u: "${parca[2]:-}" biçimiyle çağrılır)
+  MODEL=""; EFOR=""; MOD=""
+  local k
+  for k in "$@"; do
+    case "$k" in
+      "") ;;
+      opus|sonnet) [ -z "$MODEL" ] || hata "ayar: model iki kez"; MODEL=$k ;;
+      low|medium|high|xhigh|max) [ -z "$EFOR" ] || hata "ayar: efor iki kez"; EFOR=$k ;;
+      workflow|ultracode) [ -z "$MOD" ] || hata "ayar: mod iki kez"; MOD=$k ;;
+      *) hata "ayar reddedildi: ${k//[^a-zA-Z0-9-]/?}" ;;
+    esac
+  done
+  MODEL=${MODEL:-opus}; EFOR=${EFOR:-medium}; MOD=${MOD:-normal}
+  if [ "$MODEL" = sonnet ] && [ "$MOD" = ultracode ]; then hata "sonnet ultracode reddedildi"; fi
+}
+ayar_gecerli() {  # --calistir başında dördü de beyaz liste; biri kapı dışından gelmiş olabilir
+  case "$1" in --ilk|--devam) ;; *) return 1 ;; esac
+  case "$2" in opus|sonnet) ;; *) return 1 ;; esac
+  case "$3" in low|medium|high|xhigh|max) ;; *) return 1 ;; esac
+  case "$4" in normal|workflow|ultracode) ;; *) return 1 ;; esac
+  if [ "$2" = sonnet ] && [ "$4" = ultracode ]; then return 1; fi
+}
+ayar_dosyasi() { if [ "$MOD" = ultracode ]; then echo "$AYAR_ULTRA"; else echo "$AYAR_NORMAL"; fi; }
+ayar_hazir() {  # eksik parça varsa HATA kolda çıkar; arka planda sessiz düşmez
+  local a; a=$(ayar_dosyasi)
+  [ -f "$a" ] || hata "ayar dosyası yok: $(basename "$a")"
+  [ -f "$AJANLAR" ] || hata "ajan dosyası yok: $(basename "$AJANLAR")"
+  [ -x "$CLAUDE" ] || hata "claude kurulu değil"
+  [ -f "$LIB/claude/CLAUDE.md" ] || hata "kural ana kopyası yok"
+}
+ortak_kur() {  # her turda aynı bayraklar; dizi hiç boş kalmaz
+  ortak=(--model "$MODEL" --effort "$EFOR" --settings "$(ayar_dosyasi)" --strict-mcp-config --agents "$(cat "$AJANLAR")" -n "rei-$id")
+  if [ "$MOD" = normal ]; then ortak+=(--disallowedTools Workflow); fi
+}
+
+# ---------- kural ----------
+kural_tazele() {  # kilit bizdeyken, tur başında: ~/.claude pozitif liste + ana kopyadan atomik yazım. Çıktı calistir.log'a.
+  local c="$EV/.claude" k="$LIB/claude" ad gecici
+  if [ ! -f "$k/CLAUDE.md" ] || [ ! -d "$k/agents" ] || [ ! -d "$k/skills" ]; then echo "HATA: kural ana kopyası eksik"; return 2; fi
+  if [ -L "$c" ]; then rm -f "$c"; fi
+  mkdir -p "$c" || { echo "HATA: ~/.claude açılamadı"; return 2; }
+  find "$c" -mindepth 1 -maxdepth 1 ! -name projects ! -name jobs -exec rm -rf {} + || { echo "HATA: ~/.claude temizlenemedi"; return 2; }
+  for ad in projects jobs; do
+    if [ -L "$c/$ad" ]; then rm -f "$c/$ad"; fi
+  done
+  mkdir -p "$c/projects" || { echo "HATA: ~/.claude/projects açılamadı"; return 2; }
+  find "$c/projects" -mindepth 2 -maxdepth 2 -name memory -exec rm -rf {} + || { echo "HATA: hafıza silinemedi"; return 2; }
+  gecici=$(mktemp -d "$c/.tazele.XXXXXX") || { echo "HATA: geçici dizin yok"; return 2; }
+  cp -R "$k/CLAUDE.md" "$k/agents" "$k/skills" "$gecici/" || { rm -rf "$gecici"; echo "HATA: ana kopya alınamadı"; return 2; }
+  for ad in CLAUDE.md agents skills; do
+    mv -f "$gecici/$ad" "$c/$ad" || { rm -rf "$gecici"; echo "HATA: $ad yazılamadı"; return 2; }
+  done
+  rm -rf "$gecici"
+}
+kural_satiri() {  # KURAL: <sha> | KURAL: BOZUK. Henüz hiç tur koşmamışsa bozulma sayılmaz (kurulum sonrası ilk `durum`).
+  local c="$EV/.claude" k="$LIB/claude" s="" ad
+  if duz_dosya "$LIB/surum"; then s=$(tek_satir 64 < "$LIB/surum"); fi
+  [[ "$s" =~ ^[0-9a-f+-]{1,41}(\ [0-9a-f+-]{1,41})?$ ]] || s="bilinmiyor"   # "<rei sha> <claude-kurulum sha>", kirliyse +, okunamadıysa -
+  if [ ! -d "$k" ]; then echo "KURAL: BOZUK"; return 0; fi
+  if [ ! -e "$c/CLAUDE.md" ] && [ ! -e "$c/agents" ] && [ ! -e "$c/skills" ] && [ ! -L "$c/CLAUDE.md" ]; then echo "KURAL: $s (ilk turda yazılır)"; return 0; fi
+  for ad in CLAUDE.md agents skills; do
+    if [ -L "$c/$ad" ] || ! sinirli 10 diff -r "$k/$ad" "$c/$ad" > /dev/null 2>&1; then echo "KURAL: BOZUK"; return 0; fi
+  done
+  if [ -e "$c/settings.json" ] || [ -L "$c/settings.json" ]; then echo "KURAL: BOZUK"; return 0; fi
+  echo "KURAL: $s"
+}
+
+# ---------- süreç temizliği ----------
+grup_oldur() {  # <pgid>: TERM, en çok 5 sn bekle, KILL. Değer işin dosyasından gelir: -gt 1 değilse ya da kapının kendi grubuysa dokunmaz.
+  local pg="$1" ben i
+  [[ "$pg" =~ ^[0-9]{1,12}$ ]] || return 0
+  [ "$pg" -gt 1 ] || return 0
+  ben=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ' || true)
+  if [ -z "$ben" ] || [ "$pg" = "$ben" ]; then return 0; fi
+  kill -TERM -- "-$pg" 2>/dev/null || return 0   # grupta süreç kalmamış
+  for i in 1 2 3 4 5; do
+    sleep 1
+    kill -0 -- "-$pg" 2>/dev/null || return 0
+  done
+  kill -KILL -- "-$pg" 2>/dev/null || true
+}
+calistir_pidleri() {  # <iş-id> → o işin --calistir süreçleri. Kaynak süreç tablosu: kilit/id, kilit/islem, tur.pgid işin yazabildiği yerde, karar veremez.
+  ps -axww -o pid=,uid=,command= 2>/dev/null | awk -v ben="$(id -u)" -v d="/bin/bash $KAPI --calistir $1 " '
+    $2 == ben { s = $0; sub(/^[ \t]*[0-9]+[ \t]+[0-9]+[ \t]+/, "", s); if (index(s, d) == 1) print $1 }' || true
+}
+calistir_oldur() {  # <iş-id>: iptal süresi doldu, --calistir takılmış (grubu dışında çocuğu yok, iş dosyası okumuyor). Her adımda süreç tablosundan yeniden bulunur; kalan çocuklarını uid temizliği alır.
+  local p i
+  for p in $(calistir_pidleri "$1"); do
+    if [[ "$p" =~ ^[0-9]{1,12}$ ]] && [ "$p" -gt 1 ] && [ "$p" != "$$" ]; then kill -TERM "$p" 2>/dev/null || true; fi
+  done
+  for i in 1 2 3 4 5; do
+    [ -n "$(calistir_pidleri "$1")" ] || return 0
+    sleep 1
+  done
+  for p in $(calistir_pidleri "$1"); do
+    if [[ "$p" =~ ^[0-9]{1,12}$ ]] && [ "$p" -gt 1 ] && [ "$p" != "$$" ]; then kill -KILL "$p" 2>/dev/null || true; fi
+  done
+  sleep 1
+}
+tur_gruplari() {  # <--calistir pid…> → soyundaki süreçlerin grupları; --calistir'ın kendi grubu hariç (git, sleep gibi kapı çocukları orada)
+  ps -axww -o pid=,ppid=,pgid= 2>/dev/null | awk -v kok="$*" '
+    { ata[$1] = $2; grup[$1] = $3 }
+    END {
+      n = split(kok, k, " ")
+      for (i = 1; i <= n; i++) { kokte[k[i]] = 1; dis[grup[k[i]]] = 1 }
+      for (p in ata) {
+        q = p; j = 0
+        while (q + 0 > 1 && j++ < 64) {
+          q = ata[q]
+          if (q in kokte) { if (!(grup[p] in dis)) print grup[p]; break }
+        }
+      }
+    }' | sort -un || true
+}
+# rei uid'sinde artık süreçler (pid listesi). Dokunulmaz: ata zinciri kapıya, sshd'ye ya da başka uid'ye varan süreçler (eşzamanlı `durum`,
+# çalışan tur, Yusuf'un `sudo -u rei`'si) ve /System/, /usr/libexec/, /usr/sbin/ yollu sistem süreçleri. `ps` metni argv'dir, sahtelenebilir: sınır değil.
+uid_surecleri() {
+  ps -axww -o pid=,ppid=,uid=,command= 2>/dev/null | awk -v ben="$(id -u)" -v kapi="/bin/bash $KAPI" -v kendi="$$" '
+    {
+      p = $1; ata[p] = $2; uid[p] = $3; s = $0
+      sub(/^[ \t]*[0-9]+[ \t]+[0-9]+[ \t]+[0-9]+[ \t]+/, "", s); kom[p] = s
+    }
+    END {
+      for (p in uid) {
+        if (uid[p] != ben || p + 0 <= 1 || p == kendi) continue
+        if (kom[p] ~ /^\/(System|usr\/libexec|usr\/sbin)\//) continue
+        korunan = 0; q = p; n = 0
+        while (q + 0 > 1 && n++ < 64) {
+          if (uid[q] != ben || index(kom[q], kapi) == 1 || kom[q] ~ /^(\/usr\/sbin\/|\/usr\/libexec\/)?sshd(-session)?([: ]|$)/) { korunan = 1; break }
+          q = ata[q]
+        }
+        if (!korunan) print p
+      }
+    }' || true
+}
+uid_temizle() {  # yalnız kilit bizdeyken (çalışan turda asla) ve yalnız $KULLANICI ile. Tek tek pozitif pid: `kill -- -1` hiç oluşmaz.
+  [ "$(id -un)" = "$KULLANICI" ] || return 0
+  local liste p
+  liste=$(uid_surecleri)
+  [ -n "$liste" ] || return 0
+  for p in $liste; do
+    if [[ "$p" =~ ^[0-9]{1,12}$ ]] && [ "$p" -gt 1 ] && [ "$p" != "$$" ]; then kill -TERM "$p" 2>/dev/null || true; fi
+  done
+  sleep 2
+  for p in $(uid_surecleri); do
+    if [[ "$p" =~ ^[0-9]{1,12}$ ]] && [ "$p" -gt 1 ] && [ "$p" != "$$" ]; then kill -KILL "$p" 2>/dev/null || true; fi
+  done
+}
+kapi_uyarilari() {  # yalnız durum/uyarı: temizlik yapmaz, eşzamanlı turu bozmaz
+  local n
+  if [ "$(id -un)" = "$KULLANICI" ]; then
+    n=$(uid_surecleri | wc -l | tr -d ' ')
+    if [ "${n:-0}" -gt 0 ]; then echo "ARTIK SÜREÇ: $n"; fi
+  fi
+  if [ -d "$EV/Library/LaunchAgents" ]; then
+    n=$(ls -A "$EV/Library/LaunchAgents" 2>/dev/null | wc -l | tr -d ' ')
+    if [ "${n:-0}" -gt 0 ]; then echo "UYARI: LaunchAgents dolu ($n dosya)"; fi
+  fi
+}
+
+# ---------- çalışma ağacı ----------
+agac_koru() {  # .git/hooks boş, .git/info/exclude yalnız kapının satırı; iş kendi exclude'una gizlediği dosyayı `kirli` saymaktan kaçamasın
+  local c="$K/.git"
+  rm -rf "$c/hooks" && mkdir "$c/hooks" || { echo "HATA: .git/hooks boşaltılamadı"; return 2; }
+  if [ -L "$c/info" ]; then rm -f "$c/info"; fi
+  mkdir -p "$c/info" && rm -rf "$c/info/exclude" || { echo "HATA: exclude silinemedi"; return 2; }
+  printf '.claude/worktrees/\n' > "$c/info/exclude" || { echo "HATA: exclude yazılamadı"; return 2; }
+}
+agac_temizle() {  # her turda ve bitir'de: projeye konan ayar/ajan/MCP artığı sonraki tura geçmez; izli dosyalar ve commit'ler kalır
+  agac_koru || return 2
+  # -e: -x'e rağmen .claude/worktrees kalır; tur arasında alt ajanın commit'lenmemiş işi silinmesin. Kayıp kalmasını bitir'de alt_agac_say önler.
+  g -C "$A" clean -q -ffdx -e '/.claude/worktrees/' -- .claude CLAUDE.local.md .mcp.json || { echo "HATA: git clean başarısız"; return 2; }
+}
+alt_agac_say() {  # bitir: .claude/worktrees altında dala geçmemiş iş sayısı; exclude satırı bu yolu `status`tan gizler, agac_kaldir hepsini siler
+  local k="$A/.claude/worktrees" w n=0 s c
+  if [ ! -e "$k" ] && [ ! -L "$k" ]; then echo 0; return 0; fi
+  if [ -L "$k" ] || [ ! -d "$k" ]; then echo 1; return 0; fi
+  for w in "$k"/* "$k"/.[!.]*; do
+    if [ ! -e "$w" ] && [ ! -L "$w" ]; then continue; fi
+    if [ -L "$w" ] || [ ! -f "$w/.git" ]; then n=$((n + 1)); continue; fi   # worktree değil: içeriği hiçbir şey görmez
+    if ! s=$(sinirli 10 "${GIT[@]}" --no-optional-locks -C "$w" status --porcelain 2>/dev/null); then n=$((n + 1)); continue; fi
+    c=$(sinirli 10 "${GIT[@]}" -C "$w" rev-list --count HEAD --not "rei/$id" 2>/dev/null || echo x)
+    if [ -n "$s" ] || [ "$c" != 0 ]; then n=$((n + 1)); fi
+  done
+  echo "$n"
+}
+dal_dogrula() {
+  [ "$(g -C "$A" rev-parse --abbrev-ref HEAD 2>/dev/null || true)" = "rei/$id" ]
+}
+agac_kaldir() {  # dal GitHub'da ya da hiç commit yok; artık ağaç ve yerel dal kalmaz
+  g -C "$K" worktree remove --force "$A" 2>/dev/null || rm -rf "$A"
+  g -C "$K" worktree prune 2>/dev/null || true
+  g -C "$K" branch -q -D "rei/$id" 2>/dev/null || true
+}
+git_ozet() {
+  {
+    echo "## Commit'ler (origin/$taban..rei/$id)"; g -C "$A" log --oneline "origin/$taban..rei/$id" 2>&1 | head -20 || true
+    echo; echo "## Değişen dosyalar (origin/$taban'a göre)"; g -C "$A" diff --stat "origin/$taban...rei/$id" 2>&1 | tail -30 || true
+    echo; echo "## Çalışma ağacı (commit'lenmemiş)"; g -C "$A" status --short 2>&1 | head -20 || true
+  } | yaz "$D/git.txt"
+}
+dal_satiri() {  # <iş-id> → "DAL: rei/<id> | N commit | M kirli"; ağaç yoksa boş. Süre tavanlı, index'e yazmaz (--no-optional-locks).
+  local id="$1" a="$AGACLAR/$1" t c k s
+  [ -f "$ISLER/$id/agac" ] && [ -d "$a" ] && [ ! -L "$a" ] || return 0
+  t=$(taban_oku "$ISLER/$id")
+  c=$(sinirli 10 "${GIT[@]}" -C "$a" rev-list --count "origin/$t..rei/$id" 2>/dev/null || true)
+  [[ "$c" =~ ^[0-9]{1,9}$ ]] || c="?"
+  if s=$(sinirli 10 "${GIT[@]}" --no-optional-locks -C "$a" status --porcelain 2>/dev/null); then
+    k=$(printf '%s' "$s" | grep -c '' || true)
+  else k="?"; fi
+  echo "DAL: rei/$id | $c commit | $k kirli"
+}
+
+# ---------- inceleme izi ----------
+# Son asistan mesajı end_turn ile biter ya da ondan sonraki araç sonucu turu kapatır (toolEndsTurn: arka plan ajanı SubagentHandback,
+# Workflow ajanı StructuredOutput ile biter, kayıtlarda end_turn yoktur). Kalite göstergesi: içeriği doğrulamaz.
+IZ_JQ='[inputs | fromjson? | objects | select(.type == "assistant" or .type == "user")]
+  | . as $k | (map(.type == "assistant") | rindex(true)) as $i
+  | if $i == null then "hayir"
+    elif $k[$i].message.stop_reason? == "end_turn" then "evet"
+    elif any($k[($i + 1):][]; .toolEndsTurn == true) then "evet"
+    else "hayir" end'
+iz_var() {  # <subagents dizini>
+  local m j tip son
+  [ -d "$1" ] && [ ! -L "$1" ] || return 1
+  while IFS= read -r m; do
+    duz_dosya "$m" || continue
+    tip=$(head -c 65536 "$m" | /usr/bin/jq -r 'if type == "object" then (.agentType // "") else "" end' 2>/dev/null | head -1 || true)
+    [ "$tip" = inceleme ] || continue
+    j="${m%.meta.json}.jsonl"
+    duz_dosya "$j" || continue
+    son=$(tail -c 2000000 "$j" | /usr/bin/jq -R -n -r "$IZ_JQ" 2>/dev/null || true)
+    if [ "$son" = evet ]; then return 0; fi
+  done < <(find "$1" -type f -name '*.meta.json' 2>/dev/null | head -500 || true)
+  return 1
+}
+inceleme_izi() {  # → $D/inceleme.txt. docs/sunucu-kurulum.md ve docs/kod-haritasi.md'ye .md istisnası uygulanmaz; diff hatası kanıt ister.
+  local liste metin="INCELEME: KANIT YOK" o
+  if liste=$(g -C "$A" -c core.quotePath=false diff --no-renames --name-only -z "origin/$taban...rei/$id" | tr '\0' '\n'); then
+    if [ -n "$liste" ] && ! LC_ALL=C grep -aqivE '\.md$' <<< "$liste" && ! LC_ALL=C grep -aqiE '^docs/(sunucu-kurulum|kod-haritasi)\.md$' <<< "$liste"; then
+      metin="INCELEME: gerekmiyor (yalnız .md)"
+    fi
+  fi
+  if [ "$metin" = "INCELEME: KANIT YOK" ]; then
+    o=$(oturum_oku "$D")
+    if [ -n "$o" ] && iz_var "$EV/.claude/projects/$(proje_anahtari "$A")/$o/subagents"; then metin="INCELEME: ajan izi var (içerik doğrulanmadı)"; fi
+  fi
+  yaz "$D/inceleme.txt" "$metin"
+}
+inceleme_satiri() {  # <iş dizini>: yalnız kapının yazdığı üç + bir metin geçer, gerisi "kayıt yok"
+  local s=""
+  if duz_dosya "$1/inceleme.txt"; then s=$(tek_satir 80 < "$1/inceleme.txt"); fi
+  case "$s" in
+    "INCELEME: ajan izi var (içerik doğrulanmadı)"|"INCELEME: KANIT YOK"|"INCELEME: gerekmiyor (yalnız .md)"|"INCELEME: gerekmiyor (commit yok)") echo "$s" ;;
+    *) echo "INCELEME: kayıt yok" ;;
+  esac
+}
+
+# ---------- PUSH satırı ----------
+push_gecerli() {  # <iş-id> <satır>: rei-push'un ürettiği tam biçim; dosya adı ya da başka serbest metin taşıyan satır geçmez (neden kümesi rei-push'la aynı)
+  local bas kuyruk orta
+  local r_main='^PUSH: main [0-9a-f]{7,40} \([0-9]{1,3} commit\)$'
+  local r_dal='^PUSH: dal rei/[0-9a-z-]+ ([0-9a-f]{40}) \(([0-9]{1,3}) commit\)'
+  local r_neden='^(; (kapı dala zorladı|main ilerlemiş, fast-forward değil|değişen yol yok|(korumalı yol değişti|dosya modu uygun değil|izinli liste dışında): [0-9]{1,6} yol))?$'
+  if [[ "$2" =~ $r_main ]]; then return 0; fi
+  [[ "$2" =~ $r_dal ]] || return 1
+  bas="PUSH: dal rei/$1 ${BASH_REMATCH[1]} (${BASH_REMATCH[2]} commit)"
+  kuyruk="; main'e birleştirme onay ister (rei-mac birlestir $1 ${BASH_REMATCH[1]})"
+  case "$2" in "$bas"*"$kuyruk") ;; *) return 1 ;; esac
+  orta="${2#"$bas"}"; orta="${orta%"$kuyruk"}"
+  [[ "$orta" =~ $r_neden ]]
+}
+sonuc_satiri() {  # <iş-id> → root sonuç dosyasının ilk satırı (PUSH:/HATA:) ya da boş; dizin root sahipli, iş yazamaz
+  local f="$SONUC_DIZINI/$1.txt" s=""
+  duz_dosya "$f" || return 0
+  s=$(tek_satir 600 < "$f")
+  case "$s" in
+    "PUSH: "*) if push_gecerli "$1" "$s"; then printf '%s\n' "$s"; fi ;;
+    "HATA: "*) printf '%s\n' "$s" ;;
+  esac
+}
+push_satiri() {  # <iş-id>: root PUSH > push.txt'teki atlandı/HATA > root HATA. push.txt'ten `PUSH: main|dal` geçmez.
+  local d="$ISLER/$1" k="" s=""
+  k=$(sonuc_satiri "$1")
+  case "$k" in "PUSH: "*) printf '%s\n' "$k"; return 0 ;; esac
+  if duz_dosya "$d/push.txt"; then s=$(tek_satir 600 < "$d/push.txt"); fi
+  case "$s" in "PUSH: atlandı "*|"HATA: "*) printf '%s\n' "$s"; return 0 ;; esac
+  if [ -n "$k" ]; then printf '%s\n' "$k"; elif duz_dosya "$d/bitis"; then echo "PUSH: kayıt yok"; fi
+}
+
+# ---------- iş durumu ----------
+is_listesi() { ls -t "$ISLER" 2>/dev/null | grep -E '^[0-9]{8}-[0-9]{6}-[a-z0-9-]{1,20}$' || true; }
+beklemede() { ! duz_dosya "$1/bitis" && { duz_dosya "$1/soru" || duz_dosya "$1/bekliyor"; }; }
+bekleyen_say() {
+  local n=0 d
+  for d in $(is_listesi); do
+    if beklemede "$ISLER/$d"; then n=$((n + 1)); fi
+  done
+  echo "$n"
+}
+durum_kisa() {  # <iş-id> → tek satır: bitti, çalışıyor, soru bekliyor, cevap bekliyor, belirsiz
+  local d="$ISLER/$1" bas bit ek=""
+  bas=$(sayi "$d/baslangic")
+  if duz_dosya "$d/bitis"; then
+    bit=$(sayi "$d/bitis")
+    if [ -e "$d/iptal" ]; then ek=" (iptal)"; fi
+    echo "bitti kod=$(sayi "$d/cikis") süre=$((bit - bas))s$ek"
+  elif [ "$(kilit_oku id)" = "$1" ] && kilit_canli; then
+    echo "çalışıyor süre=$(( $(date +%s) - bas ))s"
+  elif duz_dosya "$d/soru"; then
+    echo "soru bekliyor (cevap: rei-mac cevap $1) süre=$(( $(date +%s) - bas ))s"
+  elif duz_dosya "$d/bekliyor"; then
+    echo "cevap bekliyor (devam: rei-mac devam $1, bitir: rei-mac bitir $1) süre=$(( $(date +%s) - bas ))s"
+  else
+    echo "belirsiz (süreç yok, bitiş kaydı yok)"
+  fi
+}
+yarim_soru() {  # <iş dizini> <neden>: kapının ürettiği SORU; `Bırak` yalnız `yarim` işaretiyle işlenir
+  yaz "$1/soru" "SORU: İş yarıda kaldı ($2), devam edeyim mi? || Devam | Bırak"
+  yaz "$1/yarim" < /dev/null
+  rm -f "$1/bekliyor"
+}
+belirsiz_onar() {  # <iş-id>: Mac yeniden başlamış, tur kaydı yarım; oturum ve asistan mesajı varsa konuşma SORU ile sürer
+  local d="$ISLER/$1" o
+  duz_dosya "$d/agac" || return 0
+  duz_dosya "$d/bitis" && return 0
+  duz_dosya "$d/soru" && return 0
+  duz_dosya "$d/bekliyor" && return 0
+  [ "$(kilit_oku id)" != "$1" ] || return 0
+  o=$(oturum_oku "$d")
+  [ -n "$o" ] || return 0
+  if asistan_var "$1" "$o"; then yarim_soru "$d" "süreç kayboldu"; fi
+}
+is_kapat() { yaz "$D/bitis" "$(date +%s)"; rm -f "$D/soru" "$D/bekliyor" "$D/yarim" "$D/yarim-devam"; }
+
+# ---------- iç mod: tek tur (nohup ile arka planda; kilit üst süreçte alındı) ----------
+hazirla() {  # worktree ve bayraklar; çıktı calistir.log'a. 2 dönerse tur başlamaz.
+  taban=$(g -C "$K" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||' || true)
+  taban="${taban:-main}"
+  [[ "$taban" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,50}$ ]] || { echo "HATA: taban dalı adı reddedildi"; return 2; }
+  if [ "$kip" = --ilk ]; then
+    echo "$taban" > "$D/taban"
+    g -C "$K" fetch -q origin || { echo "HATA: git fetch başarısız (ağ/PAT?)"; return 2; }
+    agac_koru || return 2
+    g -C "$K" worktree add -q -b "rei/$id" "$A" "origin/$taban" || { echo "HATA: worktree açılamadı"; return 2; }
+    oturum=$(uuidgen | tr 'A-Z' 'a-z'); echo "$oturum" > "$D/oturum"
+    echo "$A" > "$D/agac"
+    date +%s > "$D/baslangic"
+  else   # aynı ağaç, aynı dal, aynı Claude oturumu; arada başka iş koşmuş olabilir
+    oturum=$(oturum_oku "$D")
+    [ -n "$oturum" ] || { echo "HATA: oturum kimliği yok"; return 2; }
+    [ -d "$A" ] && [ ! -L "$A" ] || { echo "HATA: çalışma ağacı yok"; return 2; }
+  fi
+  dal_dogrula || g -C "$A" checkout -q "rei/$id" || { echo "HATA: dal rei/$id alınamadı"; return 2; }
+  dal_dogrula || { echo "HATA: dal rei/$id değil"; return 2; }
+  agac_temizle || return 2
+  ortak_kur
+  if [ "$kip" = --ilk ]; then giris="$D/not.md"; oturum_bayragi=--session-id; else giris="$D/cevap.md"; oturum_bayragi=--resume; fi
+  duz_dosya "$giris" || { echo "HATA: tur girdisi yok"; return 2; }
+  sistem="Bu iş Rei (Yusuf'un Telegram asistanı) tarafından Yusuf adına verildi; iş notu ilk kullanıcı mesajındadır. Yusuf Telegram'dadır: son mesajın ona Rei üzerinden gider, sonraki kullanıcı mesajları onun cevabıdır. Konuşma tur tur sürer; tur bitince oturum kapanmaz, iş ancak Yusuf Telegram'dan bitir deyince biter. Çalışma ağacın $A, dalın rei/$id: yalnız bu ağaçta ve bu dalda çalış. $K ana klondur, oraya girme, oraya yazma. İlk turda kod yazma: ne anladığını ve ne yapacağını en çok 5 satırda plan olarak yaz ve onay bekle. Değişiklikleri bu dala commit et (mesaj Türkçe); push'u sen yapma, kapı Yusuf bitir deyince kendisi push eder. Commit'lenmemiş dosya varsa bitir reddedilir. git push yapma, sudo kullanma, dal değiştirme, main'e dokunma, ~/.claude, ~/.config ve ~/isler altına dokunma, ağaç dışına yazma, sır/token okuma ya da yazdırma, dış servise veri gönderme. Türkçe yaz. Arka plan görevi ya da Workflow sürerken turu bitirme, bitmesini bekle. Soru aracın yok (başsız oturum): Yusuf'un kararı gereken bir nokta varsa (seçim, belirsiz istek, geri dönüşü zor adım) o ana kadarki işi commit et ve son mesajının SON satırı olarak tam şu biçimde yaz, sonra dur: SORU: <tek cümle soru> || <seçenek 1> | <seçenek 2> | <seçenek 3> (2-4 kısa seçenek; seçenek yoksa yalnız 'SORU: <soru>'). Bağlamın ~200k'ya yaklaşınca işi commit et ve SORU ile dur. İş bitince son mesajın 3-5 satırlık özet olsun: ne yaptın, hangi dosyalar değişti, emin olmadığın ne var; sonuna Telegram'dan bitir de yaz."
+}
+if [ "${1:-}" = "--calistir" ]; then
+  id="${2:-}"; proje="${3:-}"; kip="${4:-}"; MODEL="${5:-}"; EFOR="${6:-}"; MOD="${7:-}"
+  id_gecerli "$id" || exit 1
+  proje_gecerli "$proje" || exit 1
+  [ "${id:16}" = "$proje" ] || exit 1
+  ayar_gecerli "$kip" "$MODEL" "$EFOR" "$MOD" || exit 1
+  D="$ISLER/$id"; K="$EV/ZZ/$proje"; A="$AGACLAR/$id"
+  [ -d "$D" ] && [ ! -L "$D" ] && [ -d "$K/.git" ] && [ -d "$KILIT" ] || exit 1
+  echo "$$" > "$KILIT/pid"; echo "$id" > "$KILIT/id"
+  trap 'rm -rf "$KILIT"' EXIT
+  rm -f "$D/cikis"   # devam turunda eski 0 kalmasın: erken hata "bitti kod=0" görünmesin
+  taban=main; oturum=""; giris=""; oturum_bayragi=""; sistem=""; ortak=()
+  altkod=0
+  ekle_hazir "$D/calistir.log"   # bundan sonraki `2>>` de güvenli: iş ancak o yönlendirme açıldıktan sonra koşar
+  { uid_temizle; kural_tazele && hazirla; } >> "$D/calistir.log" 2>&1 || altkod=$?
+  if [ "$altkod" != 0 ] || [ -e "$D/iptal" ]; then   # tur başlamadı
+    if [ -e "$D/iptal" ]; then
+      yaz "$D/cikis" 143; yaz "$D/push.txt" "PUSH: atlandı (iptal; dal Mac'te)"; is_kapat
+    elif [ "$kip" = --ilk ]; then
+      yaz "$D/cikis" "$altkod"; yaz "$D/push.txt" "PUSH: atlandı (iş başlamadı)"; is_kapat
+    fi   # --devam: bitiş yok; `durum` belirsiz görür, oturum varsa yarım SORU üretir, bekleyen iş kaybolmaz
+    log "tur başlamadı $id kod=$altkod"
+    exit 0
+  fi
+  export REI_IS_DIZINI="$D"   # adım günlüğü hook'u (adim.mjs) iş klasörünü buradan bulur
+  if [ "$MOD" = normal ]; then esz=3; top=12; else esz=5; top=20; fi
+  rm -f "$D/tur.log" "$D/hata.log" "$D/tur.pgid"
+  yaz "$D/ayar" "$MODEL $EFOR $MOD"
+  # setpgrp: alt ajan ve arka plan Bash'leri aynı grupta kalır. alarm exec'ten sonra yaşar; tavan dolunca bash 142 görür.
+  # caffeinate alt süreç açmaz (exec eder), pid ve pgid aynı kalır. Sır env'de, komut satırında değil.
+  set +e
+  (
+    cd "$A" || exit 2
+    if [ -r "$TOKEN" ] && duz_dosya "$TOKEN"; then CLAUDE_CODE_OAUTH_TOKEN=$(sinirli 5 head -c 400 "$TOKEN"); export CLAUDE_CODE_OAUTH_TOKEN; fi
+    export CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS=$esz CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION=$top
+    exec caffeinate -i perl -e 'my ($d, $s) = (shift, shift); setpgrp(0, 0); if (open(my $f, ">", $d)) { print $f "$$\n"; close $f } alarm $s; exec { $ARGV[0] } @ARGV; exit 127' \
+      "$D/tur.pgid" "$TUR_SURE" "$CLAUDE" -p "$oturum_bayragi" "$oturum" --permission-mode auto --max-turns "$MAKS_TUR" --append-system-prompt "$sistem" "${ortak[@]}" \
+      < "$giris" > "$D/tur.log" 2> "$D/hata.log"
+  ) 2>> "$D/calistir.log"
+  kod=$?
+  set -e
+  # Sıra: kod, süreç temizliği, iptal işareti, çıktı dosyaları (dosyalar yazıldıktan sonra süreç kalmamış olsun; temizlik saniyeler sürer, o arada gelen iptal kaçmasın).
+  yaz "$D/cikis" "$kod"
+  grup_oldur "$(sayi "$D/tur.pgid")"
+  rm -f "$D/tur.pgid"
+  ekle_hazir "$D/calistir.log"
+  uid_temizle >> "$D/calistir.log" 2>&1
+  if duz_dosya "$D/tur.log"; then
+    ekle_hazir "$D/cikti.log"
+    if [ "$kip" = --devam ]; then printf '\n--- tur (%s) ---\n' "$(date '+%H:%M:%S')" >> "$D/cikti.log"; fi
+    cat "$D/tur.log" >> "$D/cikti.log"
+  fi
+  if [ -e "$D/iptal" ]; then
+    git_ozet
+    yaz "$D/push.txt" "PUSH: atlandı (iptal; dal Mac'te)"
+    is_kapat; log "tur iptal edildi $id kod=$kod"
+    exit 0
+  fi
+  if [ "$kod" = 0 ]; then
+    son=""
+    if duz_dosya "$D/tur.log"; then son=$(tail -c 4000 "$D/tur.log" | LC_ALL=C grep -av '^[[:space:]]*$' | tail -1 | head -c 600 || true); fi
+    if [[ "$son" == "SORU: "* ]]; then
+      yaz "$D/soru" "$son"; rm -f "$D/yarim"
+      log "iş soru bekliyor $id"
+    else
+      yaz "$D/bekliyor" "$(date +%s)"
+      log "tur bitti, cevap bekliyor $id"
+    fi
+    rm -f "$D/bitis"   # iş kendi yazdıysa konuşma kapanmasın
+    exit 0
+  fi
+  if asistan_var "$id" "$oturum"; then   # yarım kalan tur (F1.8): metin tur.log ve hata.log kuyruğundan
+    metin=""
+    if duz_dosya "$D/tur.log"; then metin=$(tail -c 2000 "$D/tur.log"); fi
+    if duz_dosya "$D/hata.log"; then metin="$metin"$'\n'$(tail -c 2000 "$D/hata.log"); fi
+    if [ "$kod" = 142 ]; then neden="süre doldu"
+    elif LC_ALL=C grep -aqiE 'max[ -_]?turns' <<< "$metin"; then neden="tur tavanı"
+    elif LC_ALL=C grep -aqi 'limit' <<< "$metin"; then neden="limit"
+    else neden="çıkış $kod"; fi
+    yarim_soru "$D" "$neden"
+    log "tur yarıda kaldı $id kod=$kod"
+    exit 0
+  fi
+  git_ozet
+  yaz "$D/push.txt" "PUSH: atlandı (Claude çıkış kodu $kod; dal Mac'te)"
+  if [ "$(g -C "$A" rev-list --count "origin/$taban..rei/$id" 2>/dev/null || echo x)" = 0 ] && [ -z "$(g -C "$A" status --porcelain 2>/dev/null || echo x)" ]; then agac_kaldir; fi
+  is_kapat
+  log "iş bitti $id kod=$kod"
+  exit 0
+fi
+
+# ---------- SSH kapısı ----------
+cmd="${SSH_ORIGINAL_COMMAND:-}"
+kaynak="${SSH_CONNECTION:-yerel}"; kaynak="${kaynak%% *}"
+if [[ "$cmd" == *$'\n'* ]]; then log "from=$kaynak çok satırlı komut reddedildi"; hata "çok satırlı komut reddedildi"; fi
+kayit="${cmd:0:300}"; log "from=$kaynak cmd=${kayit//[^[:print:]]/?}"
+read -r -a parca <<< "$cmd"
+alt="${parca[0]:-}"; a1="${parca[1]:-}"
+case "$alt" in
+  is|devam|cevap) [ "${#parca[@]}" -le 5 ] || hata "fazla argüman" ;;
+  *) [ "${#parca[@]}" -le 2 ] || hata "fazla argüman" ;;
+esac
+bayat_kilit_temizle
+
+is_baslat() {  # is <proje> [ayar]
+  [[ "$a1" =~ ^[a-z0-9-]{1,20}$ ]] || hata "proje adı reddedildi"
+  proje_gecerli "$a1" || hata "proje beyaz listede değil: $a1"
+  ayar_coz "${parca[2]:-}" "${parca[3]:-}" "${parca[4]:-}"
+  [ -d "$EV/ZZ/$a1/.git" ] || hata "klon yok: $a1"
+  ayar_hazir
+  kilit_al ""
+  mkdir -p "$AGACLAR"
+  id="$(date +%Y%m%d-%H%M%S)-$a1"
+  D="$ISLER/$id"
+  mkdir "$D" 2>/dev/null || hata "iş dizini zaten var: $id"
+  echo "$id" > "$KILIT/id"
+  head -c 65536 > "$D/not.md"
+  if [ ! -s "$D/not.md" ]; then rm -rf "$D"; hata "iş notu boş (stdin'den gelmeli)"; fi
+  echo "$MODEL $EFOR $MOD" > "$D/ayar"
+  rm -rf "$D/nohup.log"
+  nohup "$KAPI" --calistir "$id" "$a1" --ilk "$MODEL" "$EFOR" "$MOD" > "$D/nohup.log" 2>&1 < /dev/null &
+  local p=$!
+  trap - EXIT
+  echo "$p" > "$KILIT/pid" 2>/dev/null || true
+  log "iş başladı $id pid=$p"
+  echo "$id"
+}
+tur_ac() {  # cevap|devam: tek kod yolu. cevap ≤ 2000 bayt, yalnız soru bekleyen işe; devam ≤ 8 KB, bekleyen her işe.
+  local tavan=$CEVAP_TAVAN proje metin
+  [ "$alt" = cevap ] || tavan=$DEVAM_TAVAN
+  id_gecerli "$a1" || hata "iş-id reddedildi"
+  ayar_coz "${parca[2]:-}" "${parca[3]:-}" "${parca[4]:-}"
+  D="$ISLER/$a1"; A="$AGACLAR/$a1"; [ -d "$D" ] && [ ! -L "$D" ] || hata "iş yok: $a1"
+  duz_dosya "$D/agac" || hata "eski düzen iş, sürdürülemez: $a1"
+  proje="${a1:16}"
+  proje_gecerli "$proje" || hata "proje beyaz listede değil: $proje"
+  [ -d "$EV/ZZ/$proje/.git" ] || hata "klon yok: $proje"
+  [ -d "$A" ] && [ ! -L "$A" ] || hata "çalışma ağacı yok: $a1"
+  [ -n "$(oturum_oku "$D")" ] || hata "oturum kaydı yok"
+  ayar_hazir
+  kilit_al "$a1"
+  [ ! -e "$D/iptal" ] || hata "bu iş için iptal istenmiş: $a1"
+  if [ "$alt" = cevap ]; then
+    ! duz_dosya "$D/bitis" && duz_dosya "$D/soru" || hata "bu iş soru beklemiyor: $a1"
+  else
+    beklemede "$D" || hata "bu iş cevap beklemiyor: $a1"
+  fi
+  # Tavan ham baytta ölçülür: temizlikten sonra ölçülürse iconv yarım karakteri atar, kırpılan mesaj denetimden geçer.
+  head -c $((tavan + 1)) | yaz "$D/cevap.ham" || true
+  [ "$(wc -c < "$D/cevap.ham" | tr -d ' ')" -le "$tavan" ] || { rm -f "$D/cevap.ham"; hata "mesaj $tavan bayttan uzun, böl"; }
+  LC_ALL=C tr -d '\000-\010\013\014\016-\037\177' < "$D/cevap.ham" | iconv -c -f UTF-8 -t UTF-8 | yaz "$D/cevap.md" || true
+  rm -f "$D/cevap.ham"
+  [ -s "$D/cevap.md" ] || hata "mesaj boş (stdin'den gelmeli)"
+  ekle_hazir "$D/sorular.log"
+  { echo "## $(date '+%Y-%m-%d %H:%M:%S') soru"; soru_satiri "$D"; echo "## cevap"; cat "$D/cevap.md"; echo; } >> "$D/sorular.log"
+  if duz_dosya "$D/yarim"; then
+    metin=$(cat "$D/cevap.md")   # sondaki satır sonu düşer; eşleşme tam
+    if [ "$metin" = "Bırak" ]; then
+      yaz "$D/push.txt" "PUSH: atlandı (Yusuf bıraktı; dal Mac'te)"
+      is_kapat
+      log "yarım iş bırakıldı $a1"
+      echo "bırakıldı: $a1"
+      return 0
+    fi
+    yaz "$D/yarim-devam" < /dev/null; rm -f "$D/yarim"   # inceleme izi yoksa bitir push'u dala zorlar
+  fi
+  rm -f "$D/soru" "$D/bekliyor"
+  rm -rf "$D/nohup.log"
+  nohup "$KAPI" --calistir "$a1" "$proje" --devam "$MODEL" "$EFOR" "$MOD" > "$D/nohup.log" 2>&1 < /dev/null &
+  local p=$!
+  trap - EXIT
+  echo "$p" > "$KILIT/pid" 2>/dev/null || true
+  log "$alt verildi, iş sürüyor $a1 pid=$p"
+  echo "devam ediyor: $a1"
+}
+is_bitir() {  # zaman uyumlu; kilit bütün push boyunca bizde, çıkışta EXIT trap'i bırakır
+  local proje n c s zorla="" cikti ilk sonuc
+  id_gecerli "$a1" || hata "iş-id reddedildi"
+  id="$a1"; D="$ISLER/$id"; A="$AGACLAR/$id"; [ -d "$D" ] && [ ! -L "$D" ] || hata "iş yok: $id"
+  if duz_dosya "$D/bitis"; then hata "bu iş zaten bitmiş: $(push_satiri "$id")"; fi
+  duz_dosya "$D/agac" || hata "eski düzen iş, bitirilemez: $id"
+  proje="${id:16}"; K="$EV/ZZ/$proje"
+  proje_gecerli "$proje" || hata "proje beyaz listede değil: $proje"
+  [ -d "$K/.git" ] || hata "klon yok: $proje"
+  kilit_al "$id"
+  echo bitir > "$KILIT/islem"   # iptal araya girmesin: push sürerken durdurulacak tur yok. Önce islem yazılır, sonra işaret okunur; iptal tersini yapar, ikisi birlikte geçemez.
+  [ ! -e "$D/iptal" ] || hata "bu iş için iptal istenmiş: $id"
+  beklemede "$D" || hata "bu iş beklemede değil: $id"
+  [ -d "$A" ] && [ ! -L "$A" ] || hata "çalışma ağacı yok: $id"
+  taban=$(taban_oku "$D")
+  dal_dogrula || hata "ağaç rei/$id dalında değil"
+  s=$(agac_temizle 2>&1) || hata "ağaç temizlenemedi: ${s#HATA: }"
+  s=$(g -C "$A" status --porcelain) || hata "git status başarısız"
+  n=$(printf '%s' "$s" | grep -c '' || true)
+  [ "$n" = 0 ] || hata "commit'lenmemiş $n dosya"
+  n=$(alt_agac_say)
+  [ "$n" = 0 ] || hata "dala geçmemiş $n alt worktree (.claude/worktrees)"
+  git_ozet
+  c=$(g -C "$A" rev-list --count "origin/$taban..rei/$id") || hata "commit sayılamadı"
+  [[ "$c" =~ ^[0-9]{1,9}$ ]] || hata "commit sayısı okunamadı"
+  if [ "$c" = 0 ]; then
+    yaz "$D/inceleme.txt" "INCELEME: gerekmiyor (commit yok)"
+    yaz "$D/push.txt" "PUSH: atlandı (commit yok)"
+    agac_kaldir; is_kapat
+    log "bitir $id commit yok"
+    echo "PUSH: atlandı (commit yok)"
+    return 0
+  fi
+  inceleme_izi
+  if [ "$(inceleme_satiri "$D")" = "INCELEME: KANIT YOK" ] && { duz_dosya "$D/yarim" || duz_dosya "$D/yarim-devam"; }; then zorla=dal; fi
+  cikti=$(sudo -n "$REI_PUSH" yayinla "$proje" "$id" ${zorla:+"$zorla"} 2>&1 | head -c 2000 || true)
+  ilk=$(printf '%s\n' "$cikti" | tek_satir 600)
+  sonuc=$(sonuc_satiri "$id")
+  case "$ilk" in
+    "PUSH: "*)
+      case "$sonuc" in
+        "PUSH: "*) ;;
+        *) yaz "$D/push.txt" "HATA: sonuç dosyası yok ya da uyuşmuyor"; hata "sonuç dosyası yok ya da uyuşmuyor" ;;
+      esac ;;
+    "HATA: "*) yaz "$D/push.txt" "$ilk"; hata "${ilk#HATA: }" ;;
+    *) yaz "$D/push.txt" "HATA: rei-push çalışmadı: $ilk"; hata "rei-push çalışmadı: $ilk" ;;
+  esac
+  agac_kaldir
+  rm -f "$D/push.txt"
+  is_kapat
+  log "bitir $id: $sonuc"
+  printf '%s\n' "$sonuc"
+}
+is_iptal() {  # Çalışan tur: gruplar TERM sonra KILL, --calistir işareti görüp kapatır. Tur yoksa kapı kapatır. Push yok, ağaç kalır.
+  local i c pg
+  id_gecerli "$a1" || hata "iş-id reddedildi"
+  D="$ISLER/$a1"; [ -d "$D" ] && [ ! -L "$D" ] || hata "iş yok: $a1"
+  c=$(calistir_pidleri "$a1")
+  if [ -z "$c" ] && duz_dosya "$D/bitis"; then hata "bu iş zaten bitmiş: $a1"; fi
+  yaz "$D/iptal" < /dev/null   # --calistir tur başında ve sonunda okur; tur_ac ve is_bitir bu işaretle reddeder. HATA'da kalır, iptal yeniden çalışır.
+  if [ -z "$c" ] && kilit_bu_iste "$a1" && [ "$(kilit_oku islem)" = bitir ]; then   # push sürüyor; işaret önce yazıldı, is_bitir ile sıra ters
+    rm -f "$D/iptal"; hata "bitir sürüyor: $a1"
+  fi
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    c=$(calistir_pidleri "$a1")
+    if [ -n "$c" ]; then
+      for pg in $(tur_gruplari $c); do grup_oldur "$pg"; done
+    elif ! kilit_bu_iste "$a1"; then break; fi
+    sleep 1
+  done
+  if [ -n "$(calistir_pidleri "$a1")" ]; then calistir_oldur "$a1"; fi
+  if [ -n "$(calistir_pidleri "$a1")" ] || kilit_bu_iste "$a1"; then
+    log "iptal: durdurulamadı $a1"
+    hata "durdurulamadı: $a1"
+  fi
+  if ! duz_dosya "$D/bitis"; then   # bekleyen iş, tur sonu yarışı ya da mesajı reddedilen tur_ac: --calistir kapatmadı, kapı kapatır
+    bayat_kilit_temizle
+    # Kilit başka işteyse bu iş zaten koşamaz; boşsa `devam` ile yarışmasın diye alınır, kilit bizdeyken --calistir'dan kopan süreçler de temizlenir.
+    if mkdir "$KILIT" 2>/dev/null; then
+      trap 'rm -rf "$KILIT"' EXIT
+      echo "$$" > "$KILIT/pid"; echo "$a1" > "$KILIT/id"
+      uid_temizle > /dev/null 2>&1
+    fi
+    yaz "$D/push.txt" "PUSH: atlandı (iptal; dal Mac'te)"
+    is_kapat
+  fi
+  log "iptal edildi $a1"
+  echo "iptal edildi: $a1"
+}
+
+case "$alt" in
+  is) is_baslat ;;
+  devam|cevap) tur_ac ;;
+  bitir) is_bitir ;;
+  iptal) is_iptal ;;
+  durum)
+    if [ -z "$a1" ]; then
+      n=0
+      for d in $(is_listesi | head -10); do
+        printf '%s  %s\n' "$d" "$(durum_kisa "$d")"; n=$((n + 1))
+      done
+      [ "$n" -gt 0 ] || echo "iş yok"
+      kural_satiri
+      echo "BEKLEYEN: $(bekleyen_say)"
+      kapi_uyarilari
+    else
+      id_gecerli "$a1" || hata "iş-id reddedildi"
+      D="$ISLER/$a1"; [ -d "$D" ] && [ ! -L "$D" ] || hata "iş yok: $a1"
+      belirsiz_onar "$a1"
+      satir="$(durum_kisa "$a1")"
+      echo "DURUM: $satir"
+      ayar_satiri "$D"
+      dal_satiri "$a1"
+      adim_satiri "$D"
+      if ! duz_dosya "$D/bitis"; then soru_satiri "$D"; fi
+      push_satiri "$a1"
+      inceleme_satiri "$D"
+      kural_satiri
+      kapi_uyarilari
+      echo "$AYRAC_BLOK"
+      case "$satir" in
+        "çalışıyor"*) ;;
+        *)
+          if duz_dosya "$D/git.txt"; then kuyruk "$D/git.txt" 6000; echo; fi
+          echo "## Claude çıktısı (son 4000 karakter)"
+          if duz_dosya "$D/tur.log"; then kuyruk "$D/tur.log" 4000; else kuyruk "$D/cikti.log" 4000; fi
+          if duz_dosya "$D/hata.log" && [ -s "$D/hata.log" ]; then echo; echo "## stderr (son 1500)"; kuyruk "$D/hata.log" 1500; fi
+          if [ "$(sayi "$D/cikis")" != 0 ] && duz_dosya "$D/calistir.log"; then echo; echo "## calistir.log (son 1500)"; kuyruk "$D/calistir.log" 1500; fi
+          ;;
+      esac
+    fi ;;
+  log)
+    id_gecerli "$a1" || hata "iş-id reddedildi"
+    D="$ISLER/$a1"; [ -d "$D" ] && [ ! -L "$D" ] || hata "iş yok: $a1"
+    if duz_dosya "$D/tur.log"; then kuyruk "$D/tur.log" 20000; else kuyruk "$D/cikti.log" 20000; fi   # tur.log'suz eski iş
+    echo "$AYRAC_LOG"
+    if duz_dosya "$D/hata.log" && [ -s "$D/hata.log" ]; then echo "## stderr (son 3000)"; kuyruk "$D/hata.log" 3000; fi
+    if duz_dosya "$D/adimlar.log"; then echo; echo "## adımlar (son 40)"; tail -40 "$D/adimlar.log" | LC_ALL=C tr -d '\000-\010\013-\037\177' | maskele | iconv -c -f UTF-8 -t UTF-8 || true; fi ;;
+  "") echo "rei-mac: alt komut gerekli (is <proje> [ayar] | durum [iş-id] | log <iş-id> | cevap <iş-id> [ayar] | devam <iş-id> [ayar] | bitir <iş-id> | iptal <iş-id>)" >&2; exit 2 ;;
+  *)  hata "reddedildi: ${alt//[^a-zA-Z0-9-]/?}" ;;
+esac

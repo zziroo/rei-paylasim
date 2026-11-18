@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Rei'nin ana VPS'e tek kapısı: verilen alt komutu ssh ile ana VPS'teki rei-kapi'ye iletir; Rei'nin anahtarı orada yalnız rei-kapi'yi çalıştırabilir (authorized_keys restrict,command=).
+# Kullanım: rei-vps ziroobank-oku | rei-vps uptime | rei-vps deploy-durum diskort | rei-vps deploy-log diskort
+#           rei-vps diskort-geri-bildirim list [yeni|incelendi] | show <id> | rei-vps diskort-incelendi <id> | rei-vps diskort-hata <sinceMs> | rei-vps diskort-kullanici-hata <kullanıcı> | rei-vps tussle-geri-bildirim | rei-vps tussle-hata <N> | rei-vps sunucu-durum
+exec ssh -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=4 rei-vps "$@"

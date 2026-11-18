@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Ana VPS'te Rei'nin tek yazma kapısı: Diskort geri bildirimini `yeni` → `incelendi` yapar. root olarak çalışır; `deploy` kullanıcısı
+# yalnız /etc/sudoers.d/rei-isaret ile ve yalnız rei-kapi üzerinden çağırır. Kaynak: rei projesi sunucu/vps/rei-isaret (root:root 755).
+# Salt okunur rei-oku'dan bilerek ayrı: başka durum yazmaz, not metni sabittir, `yeni` olmayan kayda dokunmaz (planlandı/tamamlandı geri dönmez), Yusuf'un yazdığı notu ezmez.
+# Kullanım: rei-isaret diskort-incelendi <id>
+set -euo pipefail
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+COMPOSE=/opt/diskort/infra/docker-compose.yml
+NOT="Görüldü, değerlendiriliyor."
+SURE=60; IC_SURE=55 # rei-oku ile aynı dış/iç sınır
+
+[ "$#" -eq 2 ] && [ "$1" = diskort-incelendi ] && [[ "$2" =~ ^[0-9]{1,9}$ ]] || { echo "rei-isaret: reddedildi" >&2; exit 1; }
+id="$2"
+diskort() { timeout "$SURE" docker compose -f "$COMPOSE" exec -T api timeout "$IC_SURE" node dist/feedback-cli.js "$@"; }
+
+# JSON: metin çıktısında kullanıcı metni başlık taklit edebilir.
+bilgi=$(diskort show "$id" --json | /usr/bin/python3 -Ic 'import json,sys; d=json.load(sys.stdin); print(d["status"], "notlu" if d.get("adminNote") else "notsuz")')
+read -r durum not_durumu <<< "$bilgi"
+[ -n "$durum" ] || { echo "rei-isaret: #$id durumu okunamadı" >&2; exit 1; }
+if [ "$durum" != yeni ]; then echo "#$id zaten $durum, dokunulmadı"; exit 0; fi
+if [ "$not_durumu" = notlu ]; then diskort set "$id" incelendi; else diskort set "$id" incelendi "$NOT"; fi

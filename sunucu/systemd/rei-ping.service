@@ -1,0 +1,5 @@
+[Unit]
+Description=Rei ölü adam ping'i (Kuma push)
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/rei-ping.sh

@@ -1,0 +1,5 @@
+# /etc/sudoers.d/rei-deploy (root:root 440). `deploy` kullanıcısı yalnız rei-deploy'u, yalnız bu salt okunur biçimlerde çalıştırır.
+# Kaynak: rei projesi sunucu/vps/sudoers-rei-deploy. Kurulum: visudo -cf <dosya> && install -m 440 <dosya> /etc/sudoers.d/rei-deploy
+Defaults!/usr/local/sbin/rei-deploy !requiretty, env_reset
+deploy ALL=(root) NOPASSWD: /usr/local/sbin/rei-deploy durum diskort, \
+                            /usr/local/sbin/rei-deploy log diskort
